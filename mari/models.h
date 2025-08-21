@@ -51,6 +51,8 @@ typedef enum {
     MARI_NODE_LEFT,
     MARI_KEEPALIVE,
     MARI_ERROR,
+    // add attestation event
+    MARI_ATTESTATION
 } mr_event_t;
 
 typedef enum {
@@ -62,6 +64,8 @@ typedef enum {
     MARI_PEER_LOST_TIMEOUT = 5,
     MARI_PEER_LOST_BLOOM   = 6,
     MARI_HANDOVER_FAILED   = 7,
+    // add attestation
+    MARI_ATTESTATION_FAILED = 8,
 } mr_event_tag_t;
 
 typedef struct {
