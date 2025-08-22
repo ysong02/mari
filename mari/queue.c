@@ -83,6 +83,7 @@ uint8_t mr_queue_next_packet(slot_type_t slot_type, uint8_t *packet) {
                 len = mr_queue_get_join_packet(packet);
             }
         } else if (slot_type == SLOT_TYPE_UPLINK) {
+            // TODO: add a filter for attestation packet when the state == is_attesting
             // load a packet from the queue, if any is available
             len = mr_queue_peek(packet);
             if (len) {

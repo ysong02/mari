@@ -24,6 +24,8 @@
 
 #include "board.h"
 
+#include "attestation.h"
+
 //=========================== defines ==========================================
 
 #define MARI_APP_NET_ID MARI_NET_ID_DEFAULT
@@ -162,6 +164,18 @@ int main(void) {
                     uint64_t gateway_id = event_data.data.gateway_info.gateway_id;
                     printf("Disconnected from gateway %016llX, reason: %u\n", gateway_id, event_data.tag);
                     board_set_led_mari(OFF);
+                    break;
+                }
+                case MARI_ATTESTATION:
+                {
+                    uint8_t payload[MAX_EVIDENCE];
+                    uint8_t payload_len = 0;
+                    payload[payload_len ++] = 0xE1;
+
+                    uint64_t asn_dl = mari_node_get_last_asn_dl();
+                    mr_attestation_evidence_generation(asn_dl, payload, &payload_len);
+                    
+                    mari_node_tx_payload(payload, payload_len);
                     break;
                 }
                 default:
