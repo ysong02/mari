@@ -35,6 +35,8 @@ size_t mari_gateway_count_nodes(void);
 void     mari_node_tx_payload(uint8_t *payload, uint8_t payload_len);
 bool     mari_node_is_connected(void);
 uint64_t mari_node_gateway_id(void);
+// for attestation asn collection
+uint64_t mari_node_get_last_asn_dl(void);
 
 // -------- internal api --------
 void mr_handle_packet(uint8_t *packet, uint8_t length);

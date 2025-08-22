@@ -68,10 +68,9 @@ static void mr_attestation_signature_generation(uint64_t asn_dl, uint8_t key_id,
 
 
  //=========================== public ===========================================
-uint8_t mr_attestation_evidence_generation(uint64_t asn_dl, uint8_t *buffer, uint8_t *buffer_size) {
+void mr_attestation_evidence_generation(uint64_t asn_dl, uint8_t *buffer, uint8_t *buffer_size) {
     uint32_t image_size;
-    uint8_t evidence_start = *buffer_size;
-    uint8_t offset = evidence_start;
+    uint8_t offset = *buffer_size;
     mr_attestation_get_hashed_image(&_table, hash, &image_size);
     mr_attestation_signature_generation(asn_dl, key_id, hash, private_key, public_key);
 
@@ -87,8 +86,6 @@ uint8_t mr_attestation_evidence_generation(uint64_t asn_dl, uint8_t *buffer, uin
     offset += cborencoder_put_unsigned(&buffer[offset], evidence.key_id);
     offset += cborencoder_put_bytes(&buffer[offset], evidence.signature, ED25519_SIGNATURE_LEN);
     *buffer_size = offset;
-    // return the size of final evidence
-    return offset - evidence_start;
 }
 
 // gateway checks if the evidence version is the expected one
@@ -100,7 +97,7 @@ bool mr_attestation_check_version (uint8_t *buffer, uint32_t expected_version) {
     return (decoded_version == expected_version);
 }
 
-uint8_t mr_attestation_verification_request (uint8_t *evidence, uint8_t evidence_len, uint64_t asn_dl, uint64_t asn_ul, uint64_t node_id, uint8_t *buffer, uint8_t *buffer_size) {
+void mr_attestation_verification_request (uint8_t *evidence, uint8_t evidence_len, uint64_t asn_dl, uint64_t asn_ul, uint64_t node_id, uint8_t *buffer, uint8_t *buffer_size) {
     // prepare the material to send to Verifier, order: asn_u, asn_offset, evidence, node_id
     *buffer_size += cborencoder_put_array(&buffer[*buffer_size], 4);
     *buffer_size += cborencoder_put_unsigned(&buffer[*buffer_size], asn_ul);

@@ -95,7 +95,10 @@ bool mari_node_is_connected(void) {
 uint64_t mari_node_gateway_id(void) {
     return mr_mac_get_synced_gateway();
 }
-
+// for attestation asn collection
+uint64_t mari_node_get_last_asn_dl(void) {
+    return mr_mac_get_asn() - 1; // asn -1 is the current slot
+}
 //=========================== iternal api =====================================
 
 void mr_handle_packet(uint8_t *packet, uint8_t length) {
@@ -200,7 +203,10 @@ void mr_handle_packet(uint8_t *packet, uint8_t length) {
                 if (mr_scheduler_node_assign_myself_to_cell(cell_id)) {
                     mr_assoc_node_handle_joined(header->src);
                     if (flag_attest) {
-                        // TODO: add an attestation event 
+                        // set state is_attesting, go MARI_ATTESTATION event
+                        mr_assoc_set_attesting(true);
+                        mr_event_data_t ed = { .data.gateway_info.gateway_id = header->src};
+                        _mari_vars.app_event_callback(MARI_ATTESTATION, ed); 
                     }
                 } else {
                     _mari_vars.app_event_callback(MARI_ERROR, (mr_event_data_t){ 0 });

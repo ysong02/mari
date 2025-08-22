@@ -62,4 +62,9 @@ bool mr_assoc_gateway_node_is_joined(uint64_t node_id);
 bool mr_assoc_gateway_keep_node_alive(uint64_t node_id, uint64_t asn);
 void mr_assoc_gateway_clear_old_nodes(uint64_t asn);
 
+// for attestation
+void mr_assoc_set_attesting(bool required);
+bool mr_assoc_is_attesting(void);
+void mr_assoc_set_attestation_ok(void); 
+
 #endif  // __ASSOCIATION_H

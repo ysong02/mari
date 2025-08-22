@@ -87,6 +87,8 @@ typedef struct {
 //=========================== variables =======================================
 
 assoc_vars_t assoc_vars = { 0 };
+// for attestation
+static bool is_attesting = false;
 
 //=========================== prototypes ======================================
 
@@ -318,6 +320,18 @@ bool mr_assoc_node_matches_network_id(uint16_t network_id) {
     return assoc_vars.network_id == network_id;
 }
 
+// for attestation
+void mr_assoc_set_attesting(bool required) {
+    is_attesting = required;
+}
+
+bool mr_assoc_is_attesting(void) {
+    return is_attesting;
+}
+
+void mr_assoc_set_attestation_ok(void) {
+    is_attesting = false;
+}
 // ------------ gateway functions ---------
 
 bool mr_assoc_gateway_node_is_joined(uint64_t node_id) {
