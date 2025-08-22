@@ -17,11 +17,12 @@
 #include <stdbool.h>
 
 //=========================== defines =========================================
-
 #define MAX_SIG_STRUCTURE   255
-
+#define MAM_EVIDENCE        128
 
 //=========================== variables =======================================
+// temporary
+extern uint8_t flag_attest;
 
 //=========================== prototypes ======================================
 
