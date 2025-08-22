@@ -26,6 +26,8 @@
 #include "bloom.h"
 #include "mari.h"
 
+#include "attestation.h"
+
 //=========================== defines ==========================================
 
 typedef struct {
@@ -147,7 +149,7 @@ void mr_handle_packet(uint8_t *packet, uint8_t length) {
                 int16_t cell_id = mr_scheduler_gateway_assign_next_available_uplink_cell(header->src, mr_mac_get_asn());
                 if (cell_id >= 0) {
                     // at the packet level, max_nodes is limited to 256 (using uint8_t cell_id)
-                    mr_queue_set_join_response(header->src, (uint8_t)cell_id);
+                    mr_queue_set_join_response(header->src, (uint8_t)cell_id, flag_attest);
                     // set the dirty flag that will trigger the event loop to compute the bloom filter
                     mr_bloom_gateway_set_dirty();
                     _mari_vars.app_event_callback(MARI_NODE_JOINED, (mr_event_data_t){ .data.node_info.node_id = header->src });
@@ -215,8 +217,13 @@ void mr_handle_packet(uint8_t *packet, uint8_t length) {
                 }
                 // the first byte after the header contains the cell_id
                 uint8_t cell_id = packet[sizeof(mr_packet_header_t)];
+                // the second byte after the header contains the flag_attest
+                uint8_t flag_attest = packet[sizeof(mr_packet_header_t) + 1];
                 if (mr_scheduler_node_assign_myself_to_cell(cell_id)) {
                     mr_assoc_node_handle_joined(header->src);
+                    if (flag_attest) {
+                        // TODO: add an attestation event 
+                    }
                 } else {
                     _mari_vars.app_event_callback(MARI_ERROR, (mr_event_data_t){ 0 });
                 }

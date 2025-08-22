@@ -25,13 +25,26 @@
 #define ED25519_PRIVATE_KEY_LEN (32U)
 #define ED25519_PUBLIC_KEY_LEN  (32U)
 
+// evidence type, send from node
 typedef struct {
     uint8_t key_id;
     uint32_t version;
     uint8_t signature[ED25519_SIGNATURE_LEN];  
 } __attribute__((packed)) evidence_t;
 
+//verification request type, send by gateway
+typedef struct {
+    uint8_t *evidence;
+    uint8_t evidence_len;
+    uint64_t asn_ul;
+    uint64_t asn_offset;
+    uint64_t node_id;
+} verification_request_t;
+
+
  //=========================== variables ========================================
+// temporary fixed true 
+uint8_t flag_attest = 1;
 uint8_t hash[HASH_LEN] = {0};
 db_partitions_table_t _table = {0};
 static uint8_t signature[ED25519_SIGNATURE_LEN] = {0};
@@ -55,7 +68,7 @@ static void mr_attestation_signature_generation(uint64_t asn_dl, uint8_t key_id,
 
 
  //=========================== public ===========================================
-uint8_t mr_attestation_evidence_generation (uint64_t asn_dl, uint8_t *buffer, uint8_t *buffer_size) {
+uint8_t mr_attestation_evidence_generation(uint64_t asn_dl, uint8_t *buffer, uint8_t *buffer_size) {
     uint32_t image_size;
     uint8_t evidence_start = *buffer_size;
     uint8_t offset = evidence_start;
@@ -85,6 +98,15 @@ bool mr_attestation_check_version (uint8_t *buffer, uint32_t expected_version) {
     uint8_t offset = 1;
     offset += cbor_decode_unsigned(buffer+offset, &decoded_version);
     return (decoded_version == expected_version);
+}
+
+uint8_t mr_attestation_verification_request (uint8_t *evidence, uint8_t evidence_len, uint64_t asn_dl, uint64_t asn_ul, uint64_t node_id, uint8_t *buffer, uint8_t *buffer_size) {
+    // prepare the material to send to Verifier, order: asn_u, asn_offset, evidence, node_id
+    *buffer_size += cborencoder_put_array(&buffer[*buffer_size], 4);
+    *buffer_size += cborencoder_put_unsigned(&buffer[*buffer_size], asn_ul);
+    *buffer_size += cborencoder_put_unsigned(&buffer[*buffer_size], asn_ul - asn_dl);
+    *buffer_size += cborencoder_put_bytes(&buffer[*buffer_size], evidence, evidence_len);
+    *buffer_size += cborencoder_put_unsigned(&buffer[*buffer_size], node_id);    
 }
 
 //=========================== private ==========================================
