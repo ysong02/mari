@@ -22,6 +22,9 @@
 #include "mari.h"
 #include "queue.h"
 
+// for attestation
+#include "attestation.h"
+
 //=========================== defines ==========================================
 
 typedef struct {
@@ -155,9 +158,10 @@ void mr_queue_set_join_request(uint64_t node_id) {
     queue_vars.join_packet.length = mr_build_packet_join_request(queue_vars.join_packet.buffer, node_id);
 }
 
-void mr_queue_set_join_response(uint64_t node_id, uint8_t assigned_cell_id) {
+void mr_queue_set_join_response(uint64_t node_id, uint8_t assigned_cell_id, uint8_t flag_attest) {
     uint8_t len                          = mr_build_packet_join_response(queue_vars.join_packet.buffer, node_id);
     queue_vars.join_packet.buffer[len++] = assigned_cell_id;
+    queue_vars.join_packet.buffer[len++] = flag_attest;
     queue_vars.join_packet.length        = len;
 }
 
