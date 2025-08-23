@@ -215,7 +215,6 @@ static void mr_attestation_signature_generation(uint64_t asn_dl, uint8_t key_id,
     sig_structure_len += cborencoder_put_bytes(&sig_structure_cbor[sig_structure_len], hash, HASH_LEN);
 
     // sign the sig_structure
-    // todo: import the ed25519 library
     size_t signature_len = crypto_ed25519_sign(signature, sig_structure_cbor, sig_structure_len, private_key, public_key);
     if (signature_len != ED25519_SIGNATURE_LEN) {
         printf("ERROR: signature_len");

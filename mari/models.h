@@ -154,6 +154,9 @@ typedef struct {
     uint64_t    last_received_asn;  ///< ASN marking the last time the node was heard from
     uint64_t    bloom_h1;           ///< H1 hash of the node ID, used to compute the bloom filter
     uint64_t    bloom_h2;           ///< H2 hash of the node ID, used to compute the bloom filter
+    // for attestation
+    bool        is_attesting;
+    uint64_t    attest_asn_dl;
 } cell_t;
 
 typedef struct {
