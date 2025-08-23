@@ -8,7 +8,7 @@
   <project Name="01mari">
     <configuration
       Name="Common"
-      project_dependencies="00drv_mr_radio(00drv);00drv_mr_timer_hf(00drv);00drv_mr_rng(00drv);00drv_mr_gpio(00drv)"
+      project_dependencies="00drv_mr_radio(00drv);00drv_mr_timer_hf(00drv);00drv_mr_rng(00drv);00drv_mr_gpio(00drv);00drv_mr_ed25519(00drv);00drv_mr_sha256(00drv);00drv_mr_soft_ed25519(00drv);00drv_mr_soft_edsign(00drv);00drv_mr_soft_f25519(00drv);00drv_mr_soft_fprime(00drv);00drv_mr_soft_sha256(00drv);00drv_mr_soft_sha512(00drv)"
       project_directory="."
       project_type="Library" />
     <configuration
@@ -39,5 +39,8 @@
 
     <file file_name="mari.c" />
     <file file_name="mari.h" />
+
+    <file file_name="attestation.c" />
+    <file file_name="attestation.h" />
   </project>
 </solution>

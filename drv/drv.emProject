@@ -47,4 +47,71 @@
     <file file_name="mr_rng.c" />
     <file file_name="../mr_rng.h" />
   </project>
+    <project Name="00drv_mr_ed25519">
+    <configuration
+      Name="Common"
+      project_dependencies="00drv_mr_utils(00drv);00drv_mr_soft_edsign(00drv)"
+      project_directory="mr_ed25519"
+      project_type="Library" />
+    <file file_name="mr_ed25519.c" />
+    <file file_name="../mr_ed25519.h" />
+  </project>
+    <project Name="00drv_mr_sha256">
+    <configuration
+      Name="Common"
+      project_dependencies="00drv_mr_utils(00drv);00drv_mr_soft_sha256(00drv)"
+      project_directory="mr_sha256"
+      project_type="Library" />
+    <file file_name="mr_sha256.c" />
+    <file file_name="../mr_sha256.h" />
+  </project>
+    <project Name="00drv_mr_soft_sha256">
+    <configuration
+      Name="Common"
+      project_directory="mr_soft_sha256"
+      project_type="Library" />
+    <file file_name="mr_soft_sha256.c" />
+    <file file_name="../mr_soft_sha256.h" />
+  </project>
+    <project Name="00drv_mr_soft_ed25519">
+    <configuration
+      Name="Common"
+      project_directory="mr_soft_ed25519"
+      project_type="Library" />
+    <file file_name="mr_soft_ed25519.c" />
+    <file file_name="../mr_soft_ed25519.h" />
+  </project>
+    <project Name="00drv_mr_soft_edsign">
+    <configuration
+      Name="Common"
+      project_dependencies="00drv_mr_soft_ed25519(00drv);00drv_mr_soft_sha512(00drv);00drv_mr_soft_fprime(00drv);00drv_mr_soft_edsign(00drv)"
+      project_directory="mr_soft_edsign"
+      project_type="Library" />
+    <file file_name="mr_soft_edsign.c" />
+    <file file_name="../mr_soft_edsign.h" />
+  </project>
+    <project Name="00drv_mr_soft_f25519">
+    <configuration
+      Name="Common"
+      project_directory="mr_soft_f25519"
+      project_type="Library" />
+    <file file_name="mr_soft_f25519.c" />
+    <file file_name="../mr_soft_f25519.h" />
+  </project>
+    <project Name="00drv_mr_soft_fprime">
+    <configuration
+      Name="Common"
+      project_directory="mr_soft_fprime"
+      project_type="Library" />
+    <file file_name="mr_soft_fprime.c" />
+    <file file_name="../mr_soft_fprime.h" />
+  </project>
+    <project Name="00drv_mr_soft_sha512">
+    <configuration
+      Name="Common"
+      project_directory="mr_soft_sha512"
+      project_type="Library" />
+    <file file_name="mr_soft_sha512.c" />
+    <file file_name="../mr_soft_sha512.h" />
+  </project>
 </solution>

@@ -1,6 +1,6 @@
 /**
  * @ingroup     mari
- * @brief       attestation, only perform when the option 'attestation' is set 
+ * @brief       attestation, only perform when the option 'attestation' is set
  *
  * @{
  * @file
@@ -14,68 +14,65 @@
 #include <stdint.h>
 #include <string.h>
 
-#include "partition.h"
+// #include "partition.h"
 #include "attestation.h"
-#include "sha256.h"
-#include "ed25519.h"
-//#include "models.h"
- //=========================== defines ==========================================
-#define HASH_LEN (32u)
+#include "mr_sha256.h"
+#include "mr_ed25519.h"
+//=========================== defines ==========================================
+#define HASH_LEN                (32u)
 #define ED25519_SIGNATURE_LEN   (64U)
 #define ED25519_PRIVATE_KEY_LEN (32U)
 #define ED25519_PUBLIC_KEY_LEN  (32U)
 
 // evidence type, send from node
 typedef struct {
-    uint8_t key_id;
+    uint8_t  key_id;
     uint32_t version;
-    uint8_t signature[ED25519_SIGNATURE_LEN];  
+    uint8_t  signature[ED25519_SIGNATURE_LEN];
 } __attribute__((packed)) evidence_t;
 
-//verification request type, send by gateway
+// verification request type, send by gateway
 typedef struct {
     uint8_t *evidence;
-    uint8_t evidence_len;
+    uint8_t  evidence_len;
     uint64_t asn_ul;
     uint64_t asn_offset;
     uint64_t node_id;
 } verification_request_t;
 
-
- //=========================== variables ========================================
-// temporary fixed true 
-uint8_t flag_attest = 1;
-uint8_t hash[HASH_LEN] = {0};
-db_partitions_table_t _table = {0};
-static uint8_t signature[ED25519_SIGNATURE_LEN] = {0};
-uint8_t version = 1;
-uint8_t key_id = 1;
-const uint8_t public_key[32] = {
+//=========================== variables ========================================
+// temporary fixed true
+uint8_t flag_attest    = 1;
+uint8_t hash[HASH_LEN] = { 0 };
+// db_partitions_table_t _table = {0};
+static uint8_t signature[ED25519_SIGNATURE_LEN] = { 0 };
+uint8_t        version                          = 1;
+uint8_t        key_id                           = 1;
+const uint8_t  public_key[32]                   = {
     0xb2, 0x4f, 0x6d, 0x4e, 0x5f, 0x81, 0x47, 0xaf, 0x1d, 0x1c, 0xd8, 0xc2, 0x6e, 0x1a, 0x51, 0x0b, 0x7a, 0x0f, 0x7f, 0x0a, 0x7b, 0xcc, 0x60, 0x68, 0x89, 0x55, 0xd3, 0x27, 0xb9, 0x9c, 0x64, 0x75
 };
 
 const uint8_t private_key[32] = {
     0xf3, 0x8f, 0x0d, 0xd6, 0x13, 0x62, 0x06, 0x3c, 0xd7, 0xa1, 0xdf, 0x84, 0x6b, 0x8a, 0x56, 0x2e, 0x9c, 0x60, 0x55, 0x80, 0xe9, 0x95, 0xed, 0xe9, 0x5f, 0x64, 0x47, 0xc5, 0x04, 0x44, 0x96, 0x87
 };
- //=========================== prototypes ==========================================
-uint8_t cborencoder_put_array(uint8_t *buffer, uint8_t elements);
-uint8_t cborencoder_put_unsigned(uint8_t *buffer, unsigned long value);
-uint8_t cborencoder_put_map(uint8_t *buffer, uint8_t elements);
-uint8_t cborencoder_put_bytes(uint8_t *buffer, const uint8_t *bytes, uint8_t bytes_len);
-uint8_t cbor_decode_unsigned(uint8_t *buffer, uint32_t *value);
-static void mr_attestation_get_hashed_image (db_partitions_table_t* partition_table, uint8_t hash[HASH_LEN], uint32_t *image_size);
-static void mr_attestation_signature_generation(uint64_t asn_dl, uint8_t key_id,  uint8_t *hash, const uint8_t *private_key, const uint8_t *public_key);
+//=========================== prototypes ==========================================
+static uint8_t cborencoder_put_array(uint8_t *buffer, uint8_t elements);
+static uint8_t cborencoder_put_unsigned(uint8_t *buffer, unsigned long value);
+static uint8_t cborencoder_put_bytes(uint8_t *buffer, const uint8_t *bytes, uint8_t bytes_len);
+static uint8_t cbor_decode_unsigned(uint8_t *buffer, uint32_t *value);
+// static void mr_attestation_get_hashed_image (db_partitions_table_t* partition_table, uint8_t hash[HASH_LEN], uint32_t *image_size);
+static void mr_attestation_get_hashed_image(uint8_t hash[HASH_LEN]);
+static void mr_attestation_signature_generation(uint64_t asn_dl, uint8_t key_id, uint8_t *hash, const uint8_t *private_key, const uint8_t *public_key);
 
-
- //=========================== public ===========================================
+//=========================== public ===========================================
 void mr_attestation_evidence_generation(uint64_t asn_dl, uint8_t *buffer, uint8_t *buffer_size) {
-    uint32_t image_size;
+    // uint32_t image_size;
     uint8_t offset = *buffer_size;
-    mr_attestation_get_hashed_image(&_table, hash, &image_size);
+    mr_attestation_get_hashed_image(hash);
     mr_attestation_signature_generation(asn_dl, key_id, hash, private_key, public_key);
 
     evidence_t evidence = {
-        .key_id = key_id,
+        .key_id  = key_id,
         .version = version
     };
     memcpy(evidence.signature, signature, ED25519_SIGNATURE_LEN);
@@ -89,21 +86,21 @@ void mr_attestation_evidence_generation(uint64_t asn_dl, uint8_t *buffer, uint8_
 }
 
 // gateway checks if the evidence version is the expected one
-bool mr_attestation_check_version (uint8_t *buffer, uint32_t expected_version) {
+bool mr_attestation_check_version(uint8_t *buffer, uint32_t expected_version) {
     uint32_t decoded_version;
     // jump to version value position
     uint8_t offset = 1;
-    offset += cbor_decode_unsigned(buffer+offset, &decoded_version);
+    offset += cbor_decode_unsigned(buffer + offset, &decoded_version);
     return (decoded_version == expected_version);
 }
 
-void mr_attestation_verification_request (uint8_t *evidence, uint8_t evidence_len, uint64_t asn_dl, uint64_t asn_ul, uint64_t node_id, uint8_t *buffer, uint8_t *buffer_size) {
+void mr_attestation_verification_request(uint8_t *evidence, uint8_t evidence_len, uint64_t asn_dl, uint64_t asn_ul, uint64_t node_id, uint8_t *buffer, uint8_t *buffer_size) {
     // prepare the material to send to Verifier, order: asn_u, asn_offset, evidence, node_id
     *buffer_size += cborencoder_put_array(&buffer[*buffer_size], 4);
     *buffer_size += cborencoder_put_unsigned(&buffer[*buffer_size], asn_ul);
     *buffer_size += cborencoder_put_unsigned(&buffer[*buffer_size], asn_ul - asn_dl);
     *buffer_size += cborencoder_put_bytes(&buffer[*buffer_size], evidence, evidence_len);
-    *buffer_size += cborencoder_put_unsigned(&buffer[*buffer_size], node_id);    
+    *buffer_size += cborencoder_put_unsigned(&buffer[*buffer_size], node_id);
 }
 
 //=========================== private ==========================================
@@ -117,25 +114,24 @@ static uint8_t cborencoder_put_array(uint8_t *buffer, uint8_t elements) {
     buffer[ret++] = (0x80 | elements);
     return ret;
 }
-
+// TODO: expand to 64bit
 // allow 32-bit integer
 static uint8_t cborencoder_put_unsigned(uint8_t *buffer, unsigned long value) {
     uint8_t ret = 0;
 
-    if (value <= 0x17){
+    if (value <= 0x17) {
         buffer[ret++] = value;
-    } else if (value <= 0xff){
+    } else if (value <= 0xff) {
         buffer[ret++] = 0x18;
         buffer[ret++] = value;
-    } else if (value <= 0xffff)
-    {
+    } else if (value <= 0xffff) {
         buffer[ret++] = 0x19;
-        buffer[ret++] = (value >> 8)& 0xff;
+        buffer[ret++] = (value >> 8) & 0xff;
         buffer[ret++] = value & 0xff;
-    } else if (value <= 0xffffffff){
+    } else if (value <= 0xffffffff) {
         buffer[ret++] = 0x1a;
-        buffer[ret++] = (value >> 24)& 0xff;
-        buffer[ret++] = (value >> 16)& 0xff;
+        buffer[ret++] = (value >> 24) & 0xff;
+        buffer[ret++] = (value >> 16) & 0xff;
         buffer[ret++] = (value >> 8) & 0xff;
         buffer[ret++] = value & 0xff;
     }
@@ -143,18 +139,7 @@ static uint8_t cborencoder_put_unsigned(uint8_t *buffer, unsigned long value) {
     return ret;
 }
 
-uint8_t cborencoder_put_map(uint8_t *buffer, uint8_t elements) {
-    uint8_t ret = 0;
-
-    if (elements > 15) {
-        return 0;
-    }
-
-    buffer[ret++] = (0xa0 | elements);
-    return ret;
-}
-
-uint8_t cborencoder_put_bytes(uint8_t *buffer, const uint8_t *bytes, uint8_t bytes_len) {
+static uint8_t cborencoder_put_bytes(uint8_t *buffer, const uint8_t *bytes, uint8_t bytes_len) {
     uint8_t ret = 0;
 
     if (bytes_len > 23) {
@@ -172,64 +157,67 @@ uint8_t cborencoder_put_bytes(uint8_t *buffer, const uint8_t *bytes, uint8_t byt
     return ret;
 }
 
- uint8_t cbor_decode_unsigned(uint8_t *buffer, uint32_t *value) {
-    uint8_t ret = 0;
+static uint8_t cbor_decode_unsigned(uint8_t *buffer, uint32_t *value) {
+    uint8_t ret       = 0;
     uint8_t lead_byte = buffer[0];
 
     if (lead_byte <= 0x17) {
         *value = lead_byte;
-        ret = 1;  
+        ret    = 1;
     } else if (lead_byte == 0x18) {
         *value = buffer[1];
-        ret = 2;  
+        ret    = 2;
     } else if (lead_byte == 0x19) {
         *value = (buffer[1] << 8) | buffer[2];
-        ret = 3;  
+        ret    = 3;
     } else if (lead_byte == 0x1a) {
         *value = (buffer[1] << 24) | (buffer[2] << 16) | (buffer[3] << 8) | buffer[4];
-        ret = 5;  
+        ret    = 5;
     } else {
-        ret = 0;  
+        ret = 0;
     }
 
     return ret;
 }
 
-
 /**
  * @brief get the hashed image value on active partition
  */
-static void mr_attestation_get_hashed_image (db_partitions_table_t* partition_table, uint8_t hash[HASH_LEN], uint32_t *image_size){
-    
-    db_read_partitions_table(partition_table);
+static void mr_attestation_get_hashed_image(uint8_t hash[HASH_LEN]) {
+
+    // db_read_partitions_table(partition_table);
 
     // find the start of image, the size of the image
-    uint32_t image_address = partition_table->partitions[partition_table->active_image].address;
-    *image_size = partition_table->partitions[partition_table->active_image].size;
+    // uint32_t image_address = partition_table->partitions[partition_table->active_image].address;
+    // *image_size = partition_table->partitions[partition_table->active_image].size;
+    uint32_t image_address = 0x00000000;
+    uint32_t image_size    = 0x00100000;
 
-    // initialize crypto 
+    // initialize crypto
     crypto_sha256_init();
-    crypto_sha256_update((uint8_t *)image_address, *image_size);
+    crypto_sha256_update((uint8_t *)image_address, image_size);
 
     // finalize sha256
-    crypto_sha256(hash);  
+    crypto_sha256(hash);
 }
 
 /**
  * @brief generate the signature
  */
-static void mr_attestation_signature_generation(uint64_t asn_dl, uint8_t key_id,  uint8_t *hash, const uint8_t *private_key, const uint8_t *public_key) {
-    // construct sig_structure 
+static void mr_attestation_signature_generation(uint64_t asn_dl, uint8_t key_id, uint8_t *hash, const uint8_t *private_key, const uint8_t *public_key) {
+    // construct sig_structure
     uint8_t sig_structure_len = 0;
     uint8_t sig_structure_cbor[MAX_SIG_STRUCTURE];
-    // fixed, three elements for signature generation
+    // three elements for signature generation, order: asn_dl, key_id, hash
     sig_structure_len += cborencoder_put_array(&sig_structure_cbor[sig_structure_len], 3);
     sig_structure_len += cborencoder_put_unsigned(&sig_structure_cbor[sig_structure_len], asn_dl);
     sig_structure_len += cborencoder_put_unsigned(&sig_structure_cbor[sig_structure_len], key_id);
-    memcpy(&sig_structure_cbor[sig_structure_len], hash, HASH_LEN);
-    sig_structure_len += HASH_LEN;
+    sig_structure_len += cborencoder_put_bytes(&sig_structure_cbor[sig_structure_len], hash, HASH_LEN);
 
     // sign the sig_structure
     // todo: import the ed25519 library
-    size_t signature_len = crypto_ed25519_sign (signature, sig_structure_cbor, sig_structure_len, private_key, public_key);
+    size_t signature_len = crypto_ed25519_sign(signature, sig_structure_cbor, sig_structure_len, private_key, public_key);
+    if (signature_len != ED25519_SIGNATURE_LEN) {
+        printf("ERROR: signature_len");
+    }
 }
