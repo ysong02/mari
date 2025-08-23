@@ -65,6 +65,6 @@ void mr_assoc_gateway_clear_old_nodes(uint64_t asn);
 // for attestation
 void mr_assoc_set_attesting(bool required);
 bool mr_assoc_is_attesting(void);
-void mr_assoc_set_attestation_ok(void); 
+void mr_assoc_set_attestation_ok(void);
 
 #endif  // __ASSOCIATION_H
