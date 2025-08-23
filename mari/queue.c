@@ -24,6 +24,7 @@
 
 // for attestation
 #include "attestation.h"
+#include <stdio.h>
 
 //=========================== defines ==========================================
 
@@ -67,6 +68,17 @@ uint8_t mr_queue_next_packet(slot_type_t slot_type, uint8_t *packet) {
         } else if (slot_type == SLOT_TYPE_DOWNLINK) {
             if (mr_queue_has_join_packet()) {
                 len = mr_queue_get_join_packet(packet);
+                // for attestation, get asn_dl for gateway
+                mr_packet_header_t *h = (mr_packet_header_t*)packet;
+                uint8_t *pl = packet + sizeof(mr_packet_header_t);
+                if (len >= sizeof(mr_packet_header_t) + 2) {
+                    uint8_t flag_attest = pl[1];
+                    if (flag_attest) {
+                        uint64_t asn_dl = mr_mac_get_asn() - 1;
+                        mr_assoc_gateway_set_attesting(h->dst, true);
+                        mr_assoc_gateway_set_attest_dl_asn(h->dst, asn_dl);
+                    }
+                }
             } else {
                 // load a packet from the queue, if any is available
                 len = mr_queue_peek(packet);
