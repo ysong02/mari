@@ -170,7 +170,7 @@ int main(void) {
                 {
                     uint8_t payload[MAX_EVIDENCE];
                     uint8_t payload_len    = 0;
-                    payload[payload_len++] = 0xE1;
+                    payload[payload_len++] = MARI_ATTEST_EVIDENCE_PAYLOAD_TAG;
 
                     uint64_t asn_dl = mari_node_get_last_asn_dl();
                     mr_attestation_evidence_generation(asn_dl, payload, &payload_len);

@@ -69,8 +69,8 @@ uint8_t mr_queue_next_packet(slot_type_t slot_type, uint8_t *packet) {
             if (mr_queue_has_join_packet()) {
                 len = mr_queue_get_join_packet(packet);
                 // for attestation, get asn_dl for gateway
-                mr_packet_header_t *h = (mr_packet_header_t*)packet;
-                uint8_t *pl = packet + sizeof(mr_packet_header_t);
+                mr_packet_header_t *h  = (mr_packet_header_t *)packet;
+                uint8_t            *pl = packet + sizeof(mr_packet_header_t);
                 if (len >= sizeof(mr_packet_header_t) + 2) {
                     uint8_t flag_attest = pl[1];
                     if (flag_attest) {
