@@ -67,9 +67,9 @@ void mr_assoc_set_attesting(bool required);
 bool mr_assoc_is_attesting(void);
 void mr_assoc_set_attestation_ok(void);
 
-void     mr_assoc_gateway_set_attesting(uint64_t node_id, bool v);
-bool     mr_assoc_gateway_is_attesting(uint64_t node_id);
-void     mr_assoc_gateway_set_attest_dl_asn(uint64_t node_id, uint64_t asn_dl);
-bool     mr_assoc_gateway_get_attest_dl_asn(uint64_t node_id, uint64_t *asn_dl_out);
+void mr_assoc_gateway_set_attesting(uint64_t node_id, bool v);
+bool mr_assoc_gateway_is_attesting(uint64_t node_id);
+void mr_assoc_gateway_set_attest_dl_asn(uint64_t node_id, uint64_t asn_dl);
+bool mr_assoc_gateway_get_attest_dl_asn(uint64_t node_id, uint64_t *asn_dl_out);
 
 #endif  // __ASSOCIATION_H

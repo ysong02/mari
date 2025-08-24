@@ -41,8 +41,10 @@ typedef struct {
 } verification_request_t;
 
 //=========================== variables ========================================
-// temporary fixed true
-uint8_t flag_attest    = 1;
+// temporary values
+uint8_t  flag_attest      = 1;
+uint32_t expected_version = 1;
+
 uint8_t hash[HASH_LEN] = { 0 };
 // db_partitions_table_t _table = {0};
 static uint8_t signature[ED25519_SIGNATURE_LEN] = { 0 };
@@ -55,6 +57,7 @@ const uint8_t  public_key[32]                   = {
 const uint8_t private_key[32] = {
     0xf3, 0x8f, 0x0d, 0xd6, 0x13, 0x62, 0x06, 0x3c, 0xd7, 0xa1, 0xdf, 0x84, 0x6b, 0x8a, 0x56, 0x2e, 0x9c, 0x60, 0x55, 0x80, 0xe9, 0x95, 0xed, 0xe9, 0x5f, 0x64, 0x47, 0xc5, 0x04, 0x44, 0x96, 0x87
 };
+
 //=========================== prototypes ==========================================
 static uint8_t cborencoder_put_array(uint8_t *buffer, uint8_t elements);
 static uint8_t cborencoder_put_unsigned(uint8_t *buffer, unsigned long value);
