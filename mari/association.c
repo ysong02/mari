@@ -91,8 +91,8 @@ assoc_vars_t assoc_vars = { 0 };
 static bool is_attesting = false;
 
 //=========================== prototypes ======================================
-// for attestation, to add asn_dl in gateway 
-static cell_t* mr_assoc_gateway_find_cell_by_node(uint64_t node_id);
+// for attestation, to add asn_dl in gateway
+static cell_t *mr_assoc_gateway_find_cell_by_node(uint64_t node_id);
 
 uint8_t mr_assoc_node_compute_backoff_random_time(uint8_t backoff_n);
 void    mr_assoc_node_init_backoff(void);
@@ -412,7 +412,8 @@ void mr_assoc_gateway_clear_old_nodes(uint64_t asn) {
 
 void mr_assoc_gateway_set_attesting(uint64_t node_id, bool v) {
     cell_t *c = mr_assoc_gateway_find_cell_by_node(node_id);
-    if (c) c->is_attesting = v;
+    if (c)
+        c->is_attesting = v;
 }
 
 bool mr_assoc_gateway_is_attesting(uint64_t node_id) {
@@ -422,12 +423,14 @@ bool mr_assoc_gateway_is_attesting(uint64_t node_id) {
 
 void mr_assoc_gateway_set_attest_dl_asn(uint64_t node_id, uint64_t asn_dl) {
     cell_t *c = mr_assoc_gateway_find_cell_by_node(node_id);
-    if (c) c->attest_asn_dl = asn_dl;
+    if (c)
+        c->attest_asn_dl = asn_dl;
 }
 
 bool mr_assoc_gateway_get_attest_dl_asn(uint64_t node_id, uint64_t *out) {
     cell_t *c = mr_assoc_gateway_find_cell_by_node(node_id);
-    if (!c) return false;
+    if (!c)
+        return false;
     *out = c->attest_asn_dl;
     return true;
 }
@@ -485,7 +488,7 @@ void mr_assoc_handle_beacon(uint8_t *packet, uint8_t length, uint8_t channel, ui
 //=========================== callbacks =======================================
 
 //=========================== private =========================================
-static cell_t* mr_assoc_gateway_find_cell_by_node(uint64_t node_id) {
+static cell_t *mr_assoc_gateway_find_cell_by_node(uint64_t node_id) {
     schedule_t *s = mr_scheduler_get_active_schedule_ptr();
     for (size_t i = 0; i < s->n_cells; i++) {
         cell_t *c = &s->cells[i];

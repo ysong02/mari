@@ -168,6 +168,34 @@ bool mr_handle_packet(uint8_t *packet, uint8_t length) {
                     // ignore packets from nodes that are not joined
                     return false;
                 }
+
+                // check if it is attesting state
+                uint8_t *ptr  = packet + sizeof(mr_packet_header_t);
+                uint8_t  plen = length - sizeof(mr_packet_header_t);
+
+                if (mr_assoc_gateway_is_attesting(header->src)) {
+                    if (plen == 0 || ptr[0] != MARI_ATTEST_EVIDENCE_PAYLOAD_TAG) {
+                        // the payload is not for evidence, drop
+                        return;
+                    }
+                    // point to evidence
+                    uint8_t *evi     = ptr + 1;
+                    uint8_t  evi_len = plen - 1;
+
+                    if (!mr_attestation_check_version(evi, expected_version)) {
+                        // version check failed
+                        // TODO: maybe a sign to the node that version check fails?
+                        return;
+                    }
+                    uint64_t asn_ul = mr_mac_get_asn() - 1;
+                    uint64_t asn_dl = 0;
+                    mr_assoc_gateway_get_attest_dl_asn(header->src, &asn_dl);
+                    // generate verification request
+                    uint8_t vr_buf[MAX_VERIFICATION_REQUEST], vr_len = 0;
+                    mr_attestation_verification_request(evi, evi_len, asn_dl, asn_ul, header->src, vr_buf, &vr_len);
+                    // TODO: send vr_buf to the user
+                    return;
+                }
                 // send the packet to the application
                 mr_event_data_t event_data = {
                     .data.new_packet = {
