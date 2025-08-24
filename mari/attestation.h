@@ -17,12 +17,15 @@
 #include <stdbool.h>
 
 //=========================== defines =========================================
-#define MAX_SIG_STRUCTURE 255
-#define MAX_EVIDENCE      128
+#define MAX_SIG_STRUCTURE                255
+#define MAX_EVIDENCE                     128
+#define MAX_VERIFICATION_REQUEST         128
+#define MARI_ATTEST_EVIDENCE_PAYLOAD_TAG 0xE1
 
 //=========================== variables =======================================
 // temporary
-extern uint8_t flag_attest;
+extern uint8_t  flag_attest;
+extern uint32_t expected_version;
 
 //=========================== prototypes ======================================
 
