@@ -72,4 +72,6 @@ bool mr_assoc_gateway_is_attesting(uint64_t node_id);
 void mr_assoc_gateway_set_attest_dl_asn(uint64_t node_id, uint64_t asn_dl);
 bool mr_assoc_gateway_get_attest_dl_asn(uint64_t node_id, uint64_t *asn_dl_out);
 
+bool mr_assoc_gateway_force_remove_node(uint64_t node_id, mr_event_tag_t reason);
+
 #endif  // __ASSOCIATION_H
