@@ -435,6 +435,31 @@ bool mr_assoc_gateway_get_attest_dl_asn(uint64_t node_id, uint64_t *out) {
     return true;
 }
 
+bool mr_assoc_gateway_force_remove_node(uint64_t node_id, mr_event_tag_t reason) {
+    // remove the node because of the bad attetation result
+    schedule_t *schedule = mr_scheduler_get_active_schedule_ptr();
+    for (size_t i = 0; i < schedule->n_cells; i++) {
+        if (schedule->cells[i].type != SLOT_TYPE_UPLINK) {
+            // we only care about uplink cells
+            continue;
+        }
+        cell_t *cell = &schedule->cells[i];
+        if (cell->assigned_node_id == node_id) {
+            // inform the scheduler
+            mr_scheduler_gateway_decrease_nodes_counter();
+            // clear the cell
+            cell->assigned_node_id  = NULL;
+            cell->last_received_asn = 0;
+            // inform the application
+            cell->is_attesting      = false;
+
+            mr_event_data_t event_data = (mr_event_data_t){ .data.node_info.node_id = node_id, .tag = reason};
+            assoc_vars.mari_event_callback(MARI_NODE_LEFT, event_data);
+            return true;
+        }   
+    }
+    return false;
+}
 // ------------ packet handlers -------
 
 void mr_assoc_handle_beacon(uint8_t *packet, uint8_t length, uint8_t channel, uint32_t ts) {

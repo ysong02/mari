@@ -193,8 +193,19 @@ bool mr_handle_packet(uint8_t *packet, uint8_t length) {
                     // generate verification request
                     uint8_t vr_buf[MAX_VERIFICATION_REQUEST], vr_len = 0;
                     mr_attestation_verification_request(evi, evi_len, asn_dl, asn_ul, header->src, vr_buf, &vr_len);
-                    // TODO: send vr_buf to the user
-                    return;
+                    uint8_t *payload_ptr = packet + sizeof(mr_packet_header_t);
+                    memcpy(payload_ptr, vr_buf, vr_len);
+                    mr_event_data_t event_data = {
+                        .data.new_packet = {
+                            .len         = vr_len + sizeof(mr_packet_header_t),
+                            .header      = (mr_packet_header_t*)packet,
+                            .payload     = payload_ptr,
+                            .payload_len = vr_len
+                        }
+                    };
+                    _mari_vars.app_event_callback(MARI_NEW_PACKET, event_data);
+                    mr_assoc_gateway_keep_node_alive(header->src, mr_mac_get_asn());
+                    break;
                 }
                 // send the packet to the application
                 mr_event_data_t event_data = {

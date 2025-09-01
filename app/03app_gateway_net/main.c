@@ -28,6 +28,8 @@
 
 #include "metrics.h"
 
+#include "models.h"
+
 //=========================== defines ==========================================
 
 #define MARI_APP_NET_CONFIG_START_ADDRESS (0x0103f800)  // start of the last page (2KB) of the flash (0x01000000 + 0x00040000 - 0x800)
@@ -172,18 +174,39 @@ int main(void) {
 
             uint8_t *mari_frame     = (uint8_t *)ipc_shared_data.uart_to_radio_tx + 1;
             uint8_t  mari_frame_len = ipc_shared_data.uart_to_radio_len - 1;
+            // for attestation, check if it is verification response
+            if (mari_frame_len > sizeof(mr_packet_header_t)) {
+                    uint8_t *payload            = mari_frame + sizeof(mr_packet_header_t);
+                    uint8_t  first_payload_byte = payload[0];
+
+                    if (first_payload_byte == 0xE3) {
+                        uint8_t result = payload[1];
+
+                        mr_packet_header_t *header = (mr_packet_header_t *)mari_frame;
+                        uint64_t node_id = header->dst; 
+
+                        if (result == 0x00) {
+                            printf("attestation fail: removing node %016llX\n", node_id);
+                            if (! mr_assoc_gateway_force_remove_node(node_id, MARI_ATTESTATION_FAILED)) {
+                                printf("tried to remove node but it was not found: node %016llX\n", node_id);
+                            }
+                            continue;
+                        } else if (result == 0x01) {
+                            printf("attestation success: node %016llX\n", node_id);
+                            mr_assoc_gateway_set_attesting(node_id, false);
+                        }
+                    }
+                }
 
             mr_packet_header_t *header = (mr_packet_header_t *)mari_frame;
             header->src                = mr_device_id();
             header->network_id         = mr_assoc_get_network_id();
-
             // handle metrics probe
             uint8_t *payload     = mari_frame + sizeof(mr_packet_header_t);
             uint8_t  payload_len = mari_frame_len - sizeof(mr_packet_header_t);
             if (metrics_is_probe(payload, payload_len)) {
                 metrics_handle_tx_probe(header->dst, payload);
             }
-
             mari_tx(mari_frame, mari_frame_len);
         }
 
