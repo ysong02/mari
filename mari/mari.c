@@ -182,8 +182,8 @@ bool mr_handle_packet(uint8_t *packet, uint8_t length) {
                     uint8_t *evi     = ptr + 1;
                     uint8_t  evi_len = plen - 1;
 
-                    if (!mr_attestation_check_version(evi, expected_version)) {
-                        // version check failed
+                    if (!mr_attestation_check_fw_version(evi, expected_fw_version)) {
+                        // firmware version check failed
                         // TODO: maybe a sign to the node that version check fails?
                         return;
                     }
