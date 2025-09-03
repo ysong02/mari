@@ -27,7 +27,7 @@
 // evidence type, send from node
 typedef struct {
     uint8_t  key_id;
-    uint32_t version;
+    uint32_t fw_version;
     uint8_t  signature[ED25519_SIGNATURE_LEN];
 } __attribute__((packed)) evidence_t;
 
@@ -43,12 +43,12 @@ typedef struct {
 //=========================== variables ========================================
 // temporary values
 uint8_t  flag_attest      = 1;
-uint32_t expected_version = 1;
+uint32_t expected_fw_version = 1;
 
 uint8_t hash[HASH_LEN] = { 0 };
 // db_partitions_table_t _table = {0};
 static uint8_t signature[ED25519_SIGNATURE_LEN] = { 0 };
-uint8_t        version                          = 1;
+uint8_t        fw_version                          = 1;
 uint8_t        key_id                           = 1;
 const uint8_t  public_key[32]                   = {
     0xb2, 0x4f, 0x6d, 0x4e, 0x5f, 0x81, 0x47, 0xaf, 0x1d, 0x1c, 0xd8, 0xc2, 0x6e, 0x1a, 0x51, 0x0b, 0x7a, 0x0f, 0x7f, 0x0a, 0x7b, 0xcc, 0x60, 0x68, 0x89, 0x55, 0xd3, 0x27, 0xb9, 0x9c, 0x64, 0x75
@@ -72,29 +72,38 @@ void mr_attestation_evidence_generation(uint64_t asn_dl, uint8_t *buffer, uint8_
     // uint32_t image_size;
     uint8_t offset = *buffer_size;
     mr_attestation_get_hashed_image(hash);
+    // temporary: set a hash value for test
+    uint8_t hash[HASH_LEN] = {
+    0xDE, 0x6C, 0xD0, 0x5D, 0x50, 0x77, 0x86, 0x48,
+    0xBD, 0xB0, 0x7B, 0x4D, 0x1C, 0x6D, 0xB8, 0x1E,
+    0x0C, 0x2D, 0xF4, 0x53, 0x3A, 0x32, 0xE5, 0x15,
+    0xE5, 0x33, 0xA2, 0x6E, 0x21, 0x72, 0x87, 
+    0x3B
+    //0x33
+    };
     mr_attestation_signature_generation(asn_dl, key_id, hash, private_key, public_key);
 
     evidence_t evidence = {
         .key_id  = key_id,
-        .version = version
+        .fw_version = fw_version
     };
     memcpy(evidence.signature, signature, ED25519_SIGNATURE_LEN);
 
-    // encode the evidence to cbor, order: version, key_id, signature
+    // encode the evidence to cbor, order: firmware version, key_id, signature
     offset += cborencoder_put_array(&buffer[offset], 3);
-    offset += cborencoder_put_unsigned(&buffer[offset], evidence.version);
+    offset += cborencoder_put_unsigned(&buffer[offset], evidence.fw_version);
     offset += cborencoder_put_unsigned(&buffer[offset], evidence.key_id);
     offset += cborencoder_put_bytes(&buffer[offset], evidence.signature, ED25519_SIGNATURE_LEN);
     *buffer_size = offset;
 }
 
-// gateway checks if the evidence version is the expected one
-bool mr_attestation_check_version(uint8_t *buffer, uint32_t expected_version) {
-    uint32_t decoded_version;
+// gateway checks if the evidence firmware version is the expected one
+bool mr_attestation_check_fw_version(uint8_t *buffer, uint32_t expected_fw_version) {
+    uint32_t decoded_fw_version;
     // jump to version value position
     uint8_t offset = 1;
-    offset += cbor_decode_unsigned(buffer + offset, &decoded_version);
-    return (decoded_version == expected_version);
+    offset += cbor_decode_unsigned(buffer + offset, &decoded_fw_version);
+    return (decoded_fw_version == expected_fw_version);
 }
 
 void mr_attestation_verification_request(uint8_t *evidence, uint8_t evidence_len, uint64_t asn_dl, uint64_t asn_ul, uint64_t node_id, uint8_t *buffer, uint8_t *buffer_size) {
