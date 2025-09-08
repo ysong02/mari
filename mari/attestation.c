@@ -18,6 +18,7 @@
 #include "attestation.h"
 #include "mr_sha256.h"
 #include "mr_ed25519.h"
+#include "mr_device.h"
 //=========================== defines ==========================================
 #define HASH_LEN                (32u)
 #define ED25519_SIGNATURE_LEN   (64U)
@@ -26,7 +27,6 @@
 
 // evidence type, send from node
 typedef struct {
-    uint8_t  key_id;
     uint32_t fw_version;
     uint8_t  signature[ED25519_SIGNATURE_LEN];
 } __attribute__((packed)) evidence_t;
@@ -49,7 +49,6 @@ uint8_t hash[HASH_LEN] = { 0 };
 // db_partitions_table_t _table = {0};
 static uint8_t signature[ED25519_SIGNATURE_LEN] = { 0 };
 uint8_t        fw_version                          = 1;
-uint8_t        key_id                           = 1;
 const uint8_t  public_key[32]                   = {
     0xb2, 0x4f, 0x6d, 0x4e, 0x5f, 0x81, 0x47, 0xaf, 0x1d, 0x1c, 0xd8, 0xc2, 0x6e, 0x1a, 0x51, 0x0b, 0x7a, 0x0f, 0x7f, 0x0a, 0x7b, 0xcc, 0x60, 0x68, 0x89, 0x55, 0xd3, 0x27, 0xb9, 0x9c, 0x64, 0x75
 };
@@ -84,7 +83,6 @@ void mr_attestation_evidence_generation(uint64_t asn_dl, uint8_t *buffer, uint8_
     mr_attestation_signature_generation(asn_dl, key_id, hash, private_key, public_key);
 
     evidence_t evidence = {
-        .key_id  = key_id,
         .fw_version = fw_version
     };
     memcpy(evidence.signature, signature, ED25519_SIGNATURE_LEN);
@@ -126,9 +124,8 @@ static uint8_t cborencoder_put_array(uint8_t *buffer, uint8_t elements) {
     buffer[ret++] = (0x80 | elements);
     return ret;
 }
-// TODO: expand to 64bit
-// allow 32-bit integer
-static uint8_t cborencoder_put_unsigned(uint8_t *buffer, unsigned long value) {
+
+static uint8_t cborencoder_put_unsigned(uint8_t *buffer, uint64_t value) {
     uint8_t ret = 0;
 
     if (value <= 0x17) {
@@ -142,6 +139,16 @@ static uint8_t cborencoder_put_unsigned(uint8_t *buffer, unsigned long value) {
         buffer[ret++] = value & 0xff;
     } else if (value <= 0xffffffff) {
         buffer[ret++] = 0x1a;
+        buffer[ret++] = (value >> 24) & 0xff;
+        buffer[ret++] = (value >> 16) & 0xff;
+        buffer[ret++] = (value >> 8) & 0xff;
+        buffer[ret++] = value & 0xff;
+    } else {
+        buffer[ret++] = 0x1b;
+        buffer[ret++] = (value >> 56) & 0xff;
+        buffer[ret++] = (value >> 48) & 0xff;
+        buffer[ret++] = (value >> 40) & 0xff;
+        buffer[ret++] = (value >> 32) & 0xff;
         buffer[ret++] = (value >> 24) & 0xff;
         buffer[ret++] = (value >> 16) & 0xff;
         buffer[ret++] = (value >> 8) & 0xff;
@@ -220,11 +227,12 @@ static void mr_attestation_signature_generation(uint64_t asn_dl, uint8_t key_id,
     // construct sig_structure
     uint8_t sig_structure_len = 0;
     uint8_t sig_structure_cbor[MAX_SIG_STRUCTURE];
-    // three elements for signature generation, order: asn_dl, key_id, hash
+    // four elements for signature generation, order: asn_dl, key_id, hash, node_id
     sig_structure_len += cborencoder_put_array(&sig_structure_cbor[sig_structure_len], 3);
     sig_structure_len += cborencoder_put_unsigned(&sig_structure_cbor[sig_structure_len], asn_dl);
     sig_structure_len += cborencoder_put_unsigned(&sig_structure_cbor[sig_structure_len], key_id);
     sig_structure_len += cborencoder_put_bytes(&sig_structure_cbor[sig_structure_len], hash, HASH_LEN);
+    sig_structure_len += cborencoder_put_unsigned(&sig_structure_cbor[sig_structure_len], mr_device_id());
 
     // sign the sig_structure
     size_t signature_len = crypto_ed25519_sign(signature, sig_structure_cbor, sig_structure_len, private_key, public_key);
