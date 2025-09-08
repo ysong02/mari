@@ -49,6 +49,7 @@ uint8_t hash[HASH_LEN] = { 0 };
 // db_partitions_table_t _table = {0};
 static uint8_t signature[ED25519_SIGNATURE_LEN] = { 0 };
 uint8_t        fw_version                          = 1;
+uint8_t        key_id                          = 1;
 const uint8_t  public_key[32]                   = {
     0xb2, 0x4f, 0x6d, 0x4e, 0x5f, 0x81, 0x47, 0xaf, 0x1d, 0x1c, 0xd8, 0xc2, 0x6e, 0x1a, 0x51, 0x0b, 0x7a, 0x0f, 0x7f, 0x0a, 0x7b, 0xcc, 0x60, 0x68, 0x89, 0x55, 0xd3, 0x27, 0xb9, 0x9c, 0x64, 0x75
 };
@@ -59,12 +60,12 @@ const uint8_t private_key[32] = {
 
 //=========================== prototypes ==========================================
 static uint8_t cborencoder_put_array(uint8_t *buffer, uint8_t elements);
-static uint8_t cborencoder_put_unsigned(uint8_t *buffer, unsigned long value);
+static uint8_t cborencoder_put_unsigned(uint8_t *buffer, uint64_t value);
 static uint8_t cborencoder_put_bytes(uint8_t *buffer, const uint8_t *bytes, uint8_t bytes_len);
 static uint8_t cbor_decode_unsigned(uint8_t *buffer, uint32_t *value);
 // static void mr_attestation_get_hashed_image (db_partitions_table_t* partition_table, uint8_t hash[HASH_LEN], uint32_t *image_size);
 static void mr_attestation_get_hashed_image(uint8_t hash[HASH_LEN]);
-static void mr_attestation_signature_generation(uint64_t asn_dl, uint8_t key_id, uint8_t *hash, const uint8_t *private_key, const uint8_t *public_key);
+static void mr_attestation_signature_generation(uint64_t asn_dl, uint8_t *hash, const uint8_t *private_key, const uint8_t *public_key);
 
 //=========================== public ===========================================
 void mr_attestation_evidence_generation(uint64_t asn_dl, uint8_t *buffer, uint8_t *buffer_size) {
@@ -80,17 +81,16 @@ void mr_attestation_evidence_generation(uint64_t asn_dl, uint8_t *buffer, uint8_
     0x3B
     //0x33
     };
-    mr_attestation_signature_generation(asn_dl, key_id, hash, private_key, public_key);
+    mr_attestation_signature_generation(asn_dl, hash, private_key, public_key);
 
     evidence_t evidence = {
         .fw_version = fw_version
     };
     memcpy(evidence.signature, signature, ED25519_SIGNATURE_LEN);
 
-    // encode the evidence to cbor, order: firmware version, key_id, signature
-    offset += cborencoder_put_array(&buffer[offset], 3);
+    // encode the evidence to cbor, order: firmware version, signature
+    offset += cborencoder_put_array(&buffer[offset], 2);
     offset += cborencoder_put_unsigned(&buffer[offset], evidence.fw_version);
-    offset += cborencoder_put_unsigned(&buffer[offset], evidence.key_id);
     offset += cborencoder_put_bytes(&buffer[offset], evidence.signature, ED25519_SIGNATURE_LEN);
     *buffer_size = offset;
 }
@@ -223,12 +223,12 @@ static void mr_attestation_get_hashed_image(uint8_t hash[HASH_LEN]) {
 /**
  * @brief generate the signature
  */
-static void mr_attestation_signature_generation(uint64_t asn_dl, uint8_t key_id, uint8_t *hash, const uint8_t *private_key, const uint8_t *public_key) {
+static void mr_attestation_signature_generation(uint64_t asn_dl, uint8_t *hash, const uint8_t *private_key, const uint8_t *public_key) {
     // construct sig_structure
     uint8_t sig_structure_len = 0;
     uint8_t sig_structure_cbor[MAX_SIG_STRUCTURE];
     // four elements for signature generation, order: asn_dl, key_id, hash, node_id
-    sig_structure_len += cborencoder_put_array(&sig_structure_cbor[sig_structure_len], 3);
+    sig_structure_len += cborencoder_put_array(&sig_structure_cbor[sig_structure_len], 4);
     sig_structure_len += cborencoder_put_unsigned(&sig_structure_cbor[sig_structure_len], asn_dl);
     sig_structure_len += cborencoder_put_unsigned(&sig_structure_cbor[sig_structure_len], key_id);
     sig_structure_len += cborencoder_put_bytes(&sig_structure_cbor[sig_structure_len], hash, HASH_LEN);
