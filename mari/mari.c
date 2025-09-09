@@ -168,45 +168,10 @@ void mr_handle_packet(uint8_t *packet, uint8_t length) {
                     return;
                 }
 
-                // check if it is attesting state
-                uint8_t *ptr  = packet + sizeof(mr_packet_header_t);
-                uint8_t  plen = length - sizeof(mr_packet_header_t);
-
-                if (mr_assoc_gateway_is_attesting(header->src)) {
-                    if (plen == 0 || ptr[0] != MARI_ATTEST_EVIDENCE_PAYLOAD_TAG) {
-                        // the payload is not for evidence, drop
-                        return;
-                    }
-                    // point to evidence
-                    uint8_t *evi     = ptr + 1;
-                    uint8_t  evi_len = plen - 1;
-
-                    if (!mr_attestation_check_fw_version(evi, expected_fw_version)) {
-                        // firmware version check failed
-                        // TODO: maybe a sign to the node that version check fails?
-                        return;
-                    }
-                    uint64_t asn_ul = mr_mac_get_asn() - 1;
-                    uint64_t asn_dl = 0;
-                    mr_assoc_gateway_get_attest_dl_asn(header->src, &asn_dl);
-                    // generate verification request
-                    uint8_t vr_buf[MAX_VERIFICATION_REQUEST], vr_len = 0;
-                    mr_attestation_verification_request(evi, evi_len, asn_dl, asn_ul, header->src, vr_buf, &vr_len);
-                    uint8_t *payload_ptr = packet + sizeof(mr_packet_header_t);
-                    memcpy(payload_ptr, vr_buf, vr_len);
-                    mr_event_data_t event_data = {
-                        .data.new_packet = {
-                            .len         = vr_len + sizeof(mr_packet_header_t),
-                            .header      = (mr_packet_header_t*)packet,
-                            .payload     = payload_ptr,
-                            .payload_len = vr_len
-                        }
-                    };
-                    _mari_vars.app_event_callback(MARI_NEW_PACKET, event_data);
-                    mr_assoc_gateway_keep_node_alive(header->src, mr_mac_get_asn());
-                    break;
+                // attestation: if packet has evidence, generates the verif_req
+                if (!mr_attestation_send_verif_req(packet, &length)) {
+                    return;
                 }
-                // send the packet to the application
                 mr_event_data_t event_data = {
                     .data.new_packet = {
                         .len         = length,
