@@ -171,7 +171,7 @@ bool mr_handle_packet(uint8_t *packet, uint8_t length) {
 
                 // attestation: if packet has evidence, generates the verif_req
                 if (!mr_attestation_send_verif_req(packet, &length)) {
-                    return;
+                    return false;
                 }
                 mr_event_data_t event_data = {
                     .data.new_packet = {

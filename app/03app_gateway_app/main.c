@@ -25,7 +25,7 @@
 #define MR_UART_INDEX    (1)          ///< Index of UART peripheral to use
 #define MR_UART_BAUDRATE (1000000UL)  ///< UART baudrate used by the gateway
 
-#define TX_QUEUE_SIZE 4
+#define TX_QUEUE_SIZE 32
 
 typedef struct {
     uint8_t buffer[256];
@@ -47,6 +47,8 @@ typedef struct {
     uint8_t    tx_queue_tail;
     uint8_t    tx_queue_count;
 } gateway_app_vars_t;
+
+//=========================== variables ======================================== 
 
 // UART RX and TX pins
 static const mr_gpio_t _mr_uart_tx_pin = { .port = 1, .pin = 1 };

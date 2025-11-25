@@ -64,6 +64,9 @@ mr_gpio_t led3 = { .port = 0, .pin = 31 };
 
 #define MARI_JOIN_TIMEOUT_SINCE_SYNCED (1000 * 1000 * 5)  // 5 seconds. after this time, go back to scanning. NOTE: have it be based on slotframe size?
 
+// temporary for attestation test
+#define MARI_ATTEST_NOT_JOIN (1000 * 1000 * 10)
+
 // after this amount of time, consider that a join request failed (very likely due to a collision during the shared uplink slot)
 // currently set to 2 slot durations -- enough when the schedule always have a shared-uplink followed by a downlink,
 // and the gateway prioritizes join responses over all other downstream packets
@@ -89,7 +92,8 @@ typedef struct {
 assoc_vars_t assoc_vars = { 0 };
 // for attestation
 static bool is_attesting = false;
-
+//temporary for attestation test
+static uint32_t rejoin_not_before_ts = 0; 
 //=========================== prototypes ======================================
 // for attestation, to add asn_dl in gateway
 static cell_t *mr_assoc_gateway_find_cell_by_node(uint64_t node_id);
@@ -169,6 +173,12 @@ uint16_t mr_assoc_get_network_id(void) {
 // ------------ node functions ------------
 
 void mr_assoc_node_handle_synced(void) {
+    // temporary for attestation test
+    uint32_t now = mr_timer_hf_now(MARI_TIMER_DEV);
+    if (rejoin_not_before_ts && now < rejoin_not_before_ts) {
+        // attestation failed, stay synced but do not queue join
+        return; 
+    }
     mr_assoc_set_state(JOIN_STATE_SYNCED);
     mr_assoc_node_init_backoff();  // ensure we start the joining procedure already with a backoff
     mr_queue_set_join_request(mr_mac_get_synced_gateway());
@@ -313,6 +323,7 @@ void mr_assoc_node_keep_gateway_alive(uint64_t asn) {
 void mr_assoc_node_handle_pending_disconnect(void) {
     mr_assoc_set_state(JOIN_STATE_IDLE);
     mr_scheduler_node_deassign_myself_from_schedule();
+    rejoin_not_before_ts = MARI_ATTEST_NOT_JOIN;
     mr_event_data_t event_data = {
         .data.gateway_info.gateway_id = mr_mac_get_synced_gateway(),
         .tag                          = assoc_vars.is_pending_disconnect
@@ -412,8 +423,9 @@ void mr_assoc_gateway_clear_old_nodes(uint64_t asn) {
 
 void mr_assoc_gateway_set_attesting(uint64_t node_id, bool v) {
     cell_t *c = mr_assoc_gateway_find_cell_by_node(node_id);
-    if (c)
+    if (c) {
         c->is_attesting = v;
+    }
 }
 
 bool mr_assoc_gateway_is_attesting(uint64_t node_id) {

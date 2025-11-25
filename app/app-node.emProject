@@ -3,6 +3,7 @@
   <project Name="03app_node">
     <configuration
       Name="Common"
+      c_preprocessor_definitions="USE_CRYPTOCELL"
       project_dependencies="01mari(01mari);00drv_mr_timer_hf(00drv)"
       project_directory="03app_node"
       project_type="Executable" />
