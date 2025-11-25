@@ -116,9 +116,9 @@ int main(void) {
     mr_timer_hf_init(MARI_APP_TIMER_DEV);
 
     board_init();
-    board_set_led_mari(RED);
+    board_set_led_mari(BLUE);
 
-    mari_init(MARI_NODE, MARI_APP_NET_ID, schedule_app, &mari_event_callback);
+    mari_init(MARI_NODE, 0xa3, schedule_app, &mari_event_callback);
 
     // blink blue every 100ms
     mr_timer_hf_set_periodic_us(MARI_APP_TIMER_DEV, 0, 100 * 1000, &_led_blink_callback);
@@ -168,6 +168,7 @@ int main(void) {
                 }
                 case MARI_ATTESTATION:
                 {
+                    board_set_led_mari(PINK);
                     uint8_t payload[MAX_EVIDENCE];
                     uint8_t payload_len    = 0;
                     payload[payload_len++] = MARI_ATTEST_EVIDENCE_PAYLOAD_TAG;

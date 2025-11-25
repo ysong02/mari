@@ -79,10 +79,10 @@ int main(void) {
     printf("Hello Mari Gateway Net Core %016llX\n", mr_device_id());
     mr_timer_hf_init(MARI_APP_TIMER_DEV);
     _init_ipc();
-
-    mari_init(MARI_GATEWAY, MARI_APP_NET_ID, schedule_app, &_mari_event_callback);
+    mari_init(MARI_GATEWAY, 0xa3, schedule_app, &_mari_event_callback);
 
     // NOTE: to send the stats every slotframe, we need to use the duration of the slotframe
+
     mr_timer_hf_set_periodic_us(MARI_APP_TIMER_DEV, 3, mr_scheduler_get_duration_us(), &_to_uart_gateway_loop);
 
     // Unlock the application core
@@ -166,7 +166,7 @@ int main(void) {
                         uint8_t result = payload[1];
 
                         mr_packet_header_t *header = (mr_packet_header_t *)mari_frame;
-                        uint64_t node_id = header->dst; 
+                        uint64_t node_id = header->dst;
 
                         if (result == 0x00) {
                             printf("attestation fail: removing node %016llX\n", node_id);
