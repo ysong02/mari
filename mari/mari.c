@@ -129,8 +129,9 @@ void mr_mari_force_gateway_startup_random_delay(void) {
 bool mr_handle_packet(uint8_t *packet, uint8_t length) {
     mr_packet_header_t *header = (mr_packet_header_t *)packet;
 
-    if (header->dst != mr_device_id() && header->dst != MARI_BROADCAST_ADDRESS && header->type != MARI_PACKET_BEACON) {
-        // ignore packets that are not for me, and not broadcast, and not a beacon
+    bool wrong_destination = header->dst != mr_device_id() && header->dst != MARI_BROADCAST_ADDRESS;
+    bool not_a_beacon      = header->type != MARI_PACKET_BEACON;
+    if (wrong_destination && not_a_beacon) {
         return false;
     }
 

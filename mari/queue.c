@@ -159,6 +159,14 @@ bool mr_queue_pop(void) {
     }
 }
 
+void mr_queue_reset(void) {
+    queue_vars.packet_queue.current = 0;
+    queue_vars.packet_queue.last    = 0;
+    queue_vars.join_packet.length   = 0;
+    queue_vars.queue_locked         = false;
+    memset(queue_vars.join_packet.buffer, 0, sizeof(queue_vars.join_packet.buffer));
+}
+
 void mr_queue_set_join_request(uint64_t node_id) {
     queue_vars.join_packet.length = mr_build_packet_join_request(queue_vars.join_packet.buffer, node_id);
 }

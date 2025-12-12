@@ -253,18 +253,20 @@ static void new_slot_synced(void) {
             mr_assoc_node_handle_pending_disconnect();
             node_back_to_scanning();
             return;
-        } else if (mr_assoc_node_too_long_waiting_for_join_response()) {
+        }
+        if (mr_assoc_node_too_long_synced_without_joining()) {
+            // too long synced without being able to join? give up and go back to scanning
+            mr_assoc_node_handle_give_up_joining();
+            node_back_to_scanning();
+            return;
+        }
+        if (mr_assoc_node_too_long_waiting_for_join_response()) {
             // too long without receiving a join response? notify the association module which will backfoff
             bool keep_trying_to_join = mr_assoc_node_handle_failed_join();
             if (!keep_trying_to_join) {
                 node_back_to_scanning();
                 return;
             }
-        } else if (mr_assoc_node_too_long_synced_without_joining()) {
-            // too long synced without being able to join? give up and go back to scanning
-            mr_assoc_node_handle_give_up_joining();
-            node_back_to_scanning();
-            return;
         }
     }
 
@@ -620,7 +622,8 @@ static void activity_rie2(void) {
 }
 
 static void fix_drift(uint32_t ts) {
-    uint32_t time_cpu_periph = 78;  // got this value by looking at the logic analyzer
+    DEBUG_GPIO_SPIIKE(&pin1);
+    uint32_t time_cpu_periph = 59;  // got this value by looking at the logic analyzer
 
     uint32_t expected_ts     = mac_vars.start_slot_ts + slot_durations.tx_offset + time_cpu_periph;
     int32_t  clock_drift     = ts - expected_ts;
@@ -754,7 +757,7 @@ static bool sync_to_gateway(uint32_t now_ts, mr_channel_info_t *selected_gateway
         time_to_skip_one_slot = slot_durations.whole_slot;
     }
 
-    uint64_t time_cpu_and_toa = 485;  // magic number: measured using the logic analyzer
+    uint64_t time_cpu_and_toa = 541;  // magic number: measured using the logic analyzer
     time_cpu_and_toa += handover_time_correction_us;
 
     uint32_t time_dispatch_new_schedule = ((slot_durations.whole_slot - time_into_gateway_slot) + time_to_skip_one_slot) - time_cpu_and_toa;

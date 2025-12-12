@@ -29,6 +29,7 @@ void    mr_queue_add(uint8_t *packet, uint8_t length);
 uint8_t mr_queue_next_packet(slot_type_t slot_type, uint8_t *packet);
 uint8_t mr_queue_peek(uint8_t *packet);
 bool    mr_queue_pop(void);
+void    mr_queue_reset(void);
 
 // void mr_queue_set_join_packet(uint64_t node_id, mr_packet_type_t packet_type);
 void mr_queue_set_join_request(uint64_t node_id);

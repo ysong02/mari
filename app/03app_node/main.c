@@ -35,13 +35,6 @@
 // -2 is for the type and needs_ack fields
 #define DEFAULT_PAYLOAD_SIZE MARI_PACKET_MAX_SIZE - sizeof(mr_packet_header_t) - 2
 
-typedef enum {
-    PAYLOAD_TYPE_APPLICATION      = 1,
-    PAYLOAD_TYPE_METRICS_REQUEST  = 128,
-    PAYLOAD_TYPE_METRICS_RESPONSE = 129,
-    PAYLOAD_TYPE_METRICS_LOAD     = 130,
-} default_payload_type_t;
-
 typedef struct __attribute__((packed)) {
     uint8_t type;
     uint8_t value[DEFAULT_PAYLOAD_SIZE];
@@ -71,7 +64,7 @@ schedule_t       *schedule_app = &schedule_huge;
 
 // example status packet, to use as periodic uplink packet
 uint8_t status_packet_mock[4] = {
-    0x90,  // swarmit notification status
+    0x80,  // swarmit notification status
     1,     // SWRMT_DEVICE_TYPE_DOTBOTV3
     1,     // SWRMT_APPLICATION_RUNNING
     80,    // battery level

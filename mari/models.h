@@ -202,7 +202,7 @@ typedef struct __attribute__((packed)) {
 // -------- types used for metrics collection --------
 
 typedef enum {
-    MARI_PAYLOAD_TYPE_METRICS_PROBE = 140,
+    MARI_PAYLOAD_TYPE_METRICS_PROBE = 0x9C,
 } mr_metrics_payload_type_t;
 
 typedef struct __attribute__((packed)) {

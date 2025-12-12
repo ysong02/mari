@@ -17,6 +17,7 @@
 #include "mac.h"
 #include "scheduler.h"
 #include "queue.h"
+#include "packet.h"
 #include "mari.h"
 
 /* Very simple test schedule */
@@ -112,6 +113,9 @@ void mari_event_callback(mr_event_t event, mr_event_data_t event_data) {
             break;
         case MARI_ERROR:
             printf("Error\n");
+            break;
+        case MARI_KEEPALIVE:
+            // just ignore it
             break;
     }
 }

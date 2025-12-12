@@ -280,7 +280,6 @@ static void      _uart_isr(uart_t uart) {
 
     // check if the interrupt was caused by a fully received package
     if (_devs[uart].p->EVENTS_ENDRX) {
-        mr_gpio_set(&pin_dbg_uart);
         _devs[uart].p->EVENTS_ENDRX = 0;
         // make sure we actually received new data
         if (_devs[uart].p->RXD.AMOUNT != 0) {
@@ -320,7 +319,6 @@ static void      _uart_isr(uart_t uart) {
             // nothing received, go back to receiving the trigger byte
             mr_uart_start_rx(uart, UART_RX_STATE_RX_TRIGGER_BYTE);
         }
-        mr_gpio_clear(&pin_dbg_uart);
     }
 
     // check if the interrupt was caused by TX completion
@@ -385,9 +383,6 @@ void TIMER4_IRQHandler(void) {
     if (NRF_UART_TIMER->EVENTS_COMPARE[TIMER_CC_NUM - 1]) {
         NRF_UART_TIMER->EVENTS_COMPARE[TIMER_CC_NUM - 1] = 0;
         NRF_UART_TIMER->TASKS_STOP                       = 1;
-
-        mr_gpio_set(&pin_dbg_timer);
-        mr_gpio_clear(&pin_dbg_timer);
 
         if (_uart_vars[_uart_global_index].rx_state == UART_RX_STATE_RX_CHUNK) {
             // tell the uart to stop receiving -> this will cause an ENDRX interrupt
