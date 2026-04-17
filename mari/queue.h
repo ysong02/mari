@@ -23,6 +23,8 @@
 
 #define MARI_AUTO_UPLINK_KEEPALIVE 1  // whether to send a keepalive packet when there is nothing to send
 
+#define MARI_JOIN_RESPONSE_QUEUE_SIZE (8) 
+
 //=========================== prototypes ======================================
 
 void    mr_queue_add(uint8_t *packet, uint8_t length);

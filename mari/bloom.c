@@ -76,9 +76,9 @@ uint8_t mr_bloom_gateway_copy(uint8_t *output) {
 void mr_bloom_gateway_compute(void) {
     bloom_vars.is_available = false;
     memset(bloom_vars.bloom, 0, MARI_BLOOM_M_BYTES);
+    // memset(bloom_vars.bloom, 0xFF, MARI_BLOOM_M_BYTES);
 
     schedule_t *schedule_ptr = mr_scheduler_get_active_schedule_ptr();
-
     for (size_t i = 0; i < schedule_ptr->n_cells; i++) {
         cell_t *cell = &schedule_ptr->cells[i];
         if (cell->type != SLOT_TYPE_UPLINK) {

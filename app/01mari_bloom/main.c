@@ -87,9 +87,9 @@ static inline __attribute__((unused)) uint64_t mix64(uint64_t x) {
 
 void mr_scheduler_gateway_gen_bloom_from_list(uint64_t *nodes, size_t count, uint8_t *bloom_output) {
     (void)bloom_output;
-    mr_gpio_set(&pin2);
+    // mr_gpio_set(&pin2);
     memset(bloom_output, 0, BLOOM_M_BYTES);
-    mr_gpio_clear(&pin2);  // 16.7 us in DEBUG
+    // mr_gpio_clear(&pin2);  // 16.7 us in DEBUG
 
     // f*ck off warnings!
     uint64_t idx = 0;

@@ -63,6 +63,8 @@ static led_color_t _get_color_for_gateway(uint64_t gateway_id) {
             return PINK;
         case 0x7D4ADB2FBBA3797F:  // 2025, Geovane
             return YELLOW;
+        case 0x6850EE16F49FB570:
+            return RED;
         default:
             return BLUE;
     }
