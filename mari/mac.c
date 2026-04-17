@@ -229,7 +229,7 @@ static void set_slot_state(mr_mac_state_t state) {
             break;
         case STATE_SLEEP:
             // DEBUG_GPIO_CLEAR(&pin1);
-            DEBUG_GPIO_CLEAR(&pin2);  // pin2 might be SET in case a packet had just started to arrive, so set it low again
+            // DEBUG_GPIO_CLEAR(&pin2);  // pin2 might be SET in case a packet had just started to arrive, so set it low again
             break;
         default:
             break;
@@ -239,14 +239,17 @@ static void set_slot_state(mr_mac_state_t state) {
 // --------------------- start/end synced slots -----------
 
 static void new_slot_synced(void) {
-    mac_vars.start_slot_ts = mr_timer_hf_now(MARI_TIMER_DEV);
+
     DEBUG_GPIO_SET(&pin0);
     DEBUG_GPIO_CLEAR(&pin0);  // debug: show that a new slot started
+    mac_vars.start_slot_ts = mr_timer_hf_now(MARI_TIMER_DEV);
 
     // perform timeout checks
     if (mari_get_node_type() == MARI_GATEWAY) {
         // too long without receiving a packet from certain nodes? disconnect them
+        DEBUG_GPIO_SET(&pin1);
         mr_assoc_gateway_clear_old_nodes(mac_vars.asn);
+        DEBUG_GPIO_CLEAR(&pin1);
     } else if (mari_get_node_type() == MARI_NODE) {
         if (mr_assoc_node_should_leave(mac_vars.asn)) {
             // assoc module determined that the node should leave, so disconnect and back to scanning
@@ -261,6 +264,8 @@ static void new_slot_synced(void) {
             return;
         }
         if (mr_assoc_node_too_long_waiting_for_join_response()) {
+            DEBUG_GPIO_SET(&pin3);
+            DEBUG_GPIO_CLEAR(&pin3);
             // too long without receiving a join response? notify the association module which will backfoff
             bool keep_trying_to_join = mr_assoc_node_handle_failed_join();
             if (!keep_trying_to_join) {
@@ -328,7 +333,7 @@ static void disable_radio_and_intra_slot_timers(void) {
 static void start_scan(void) {
     mac_vars.scan_started_ts      = mr_timer_hf_now(MARI_TIMER_DEV);
     mac_vars.scan_expected_end_ts = mac_vars.scan_started_ts + MARI_SCAN_MAX_DURATION;
-    DEBUG_GPIO_SET(&pin0);  // debug: show that a new scan started
+    // DEBUG_GPIO_SET(&pin1);  // debug: show that a new scan started
     mac_vars.is_scanning = true;
     mr_assoc_set_state(JOIN_STATE_SCANNING);
 
@@ -356,7 +361,7 @@ static void end_scan(void) {
     uint32_t now_ts = mr_timer_hf_now(MARI_TIMER_DEV);
 
     mac_vars.is_scanning = false;
-    DEBUG_GPIO_CLEAR(&pin0);  // debug: show that the scan is over
+    // DEBUG_GPIO_CLEAR(&pin1);  // debug: show that the scan is over
     set_slot_state(STATE_SLEEP);
     disable_radio_and_intra_slot_timers();
 
@@ -593,7 +598,8 @@ static void activity_ri4(uint32_t ts) {
         return;
     }
 
-    if (mari_get_node_type() == MARI_NODE && mr_assoc_is_joined() && header->src == mac_vars.synced_gateway) {
+    // if (mari_get_node_type() == MARI_NODE && mr_assoc_is_joined() && header->src == mac_vars.synced_gateway) {
+      if (mari_get_node_type() == MARI_NODE && mr_mac_node_is_synced() && header->src == mac_vars.synced_gateway) {
         // only fix drift if the packet comes from the gateway we are synced to
         // NOTE: this should ideally be done at ri3 (when the packet starts), but we don't have the id there.
         //       could use use the physical BLE address for that?
@@ -622,7 +628,7 @@ static void activity_rie2(void) {
 }
 
 static void fix_drift(uint32_t ts) {
-    DEBUG_GPIO_SPIIKE(&pin1);
+    // DEBUG_GPIO_SPIIKE(&pin1);
     uint32_t time_cpu_periph = 59;  // got this value by looking at the logic analyzer
 
     uint32_t expected_ts     = mac_vars.start_slot_ts + slot_durations.tx_offset + time_cpu_periph;
@@ -683,8 +689,8 @@ static void handle_bg_scan_and_trigger_handover(uint32_t now_ts) {
     }
 
     // debug: show that a handover is going to happen
-    DEBUG_GPIO_SET(&pin3);
-    DEBUG_GPIO_CLEAR(&pin3);
+    // DEBUG_GPIO_SET(&pin3);
+    // DEBUG_GPIO_CLEAR(&pin3);
 
     // a handover is going to happen, have the association module handle the disconnection event
     mr_assoc_node_handle_immediate_disconnect(MARI_HANDOVER);
@@ -758,6 +764,12 @@ static bool sync_to_gateway(uint32_t now_ts, mr_channel_info_t *selected_gateway
     }
 
     uint64_t time_cpu_and_toa = 541;  // magic number: measured using the logic analyzer
+    // uint64_t time_cpu_and_toa;
+    // if (selected_gateway->beacon.remaining_capacity < 30) {
+    //     time_cpu_and_toa = 581;  // smaller capacity gateways need different timing
+    // } else {
+    //     time_cpu_and_toa = 541;  // larger capacity gateways
+    // }
     time_cpu_and_toa += handover_time_correction_us;
 
     uint32_t time_dispatch_new_schedule = ((slot_durations.whole_slot - time_into_gateway_slot) + time_to_skip_one_slot) - time_cpu_and_toa;

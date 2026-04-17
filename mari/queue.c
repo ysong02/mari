@@ -40,9 +40,16 @@ typedef struct {
 } mari_packet_queue_t;
 
 typedef struct {
+    uint8_t     current;
+    uint8_t     last;
+    mr_packet_t packets[MARI_JOIN_RESPONSE_QUEUE_SIZE];
+} mari_joinresp_queue_t;
+
+typedef struct {
     mari_packet_queue_t packet_queue;
     bool                queue_locked;  ///< Simple lock to prevent concurrent access
     mr_packet_t         join_packet;
+    mari_joinresp_queue_t joinresp_queue;  // gateway JOIN_RESPONSE FIFO
 } queue_vars_t;
 
 //=========================== variables ========================================
@@ -66,8 +73,16 @@ uint8_t mr_queue_next_packet(slot_type_t slot_type, uint8_t *packet) {
                 mr_scheduler_gateway_remaining_capacity(),
                 mr_scheduler_get_active_schedule_id());
         } else if (slot_type == SLOT_TYPE_DOWNLINK) {
-            if (mr_queue_has_join_packet()) {
-                len = mr_queue_get_join_packet(packet);
+            // if (mr_queue_has_join_packet()) {
+            //     len = mr_queue_get_join_packet(packet);
+            // Priority 1: JOIN_RESPONSE FIFO
+            if (queue_vars.joinresp_queue.current != queue_vars.joinresp_queue.last) {
+                mr_packet_t *jp = &queue_vars.joinresp_queue.packets[queue_vars.joinresp_queue.current];
+                memcpy(packet, jp->buffer, jp->length);
+                len = jp->length;
+                queue_vars.joinresp_queue.current =
+                    (queue_vars.joinresp_queue.current + 1) % MARI_JOIN_RESPONSE_QUEUE_SIZE;
+
                 // for attestation, get asn_dl for gateway
                 mr_packet_header_t *h  = (mr_packet_header_t *)packet;
                 uint8_t            *pl = packet + sizeof(mr_packet_header_t);
@@ -112,17 +127,33 @@ uint8_t mr_queue_next_packet(slot_type_t slot_type, uint8_t *packet) {
 }
 
 void mr_queue_add(uint8_t *packet, uint8_t length) {
-    // lock is asymetrical: add (called from application) can wait in busy loop
+    // // lock is asymetrical: add (called from application) can wait in busy loop
     while (queue_vars.queue_locked) {
         // wait for the queue to be unlocked
     }
     queue_vars.queue_locked = true;
 
+    // // enqueue for transmission
+    // memcpy(queue_vars.packet_queue.packets[queue_vars.packet_queue.last].buffer, packet, length);
+    // queue_vars.packet_queue.packets[queue_vars.packet_queue.last].length = length;
+    // // increment the `last` index
+    // queue_vars.packet_queue.last = (queue_vars.packet_queue.last + 1) % MARI_PACKET_QUEUE_SIZE;
+
+    // queue_vars.queue_locked = false;
+
+    // check if queue is full (next position would collide with current)
+    uint8_t next_last = (queue_vars.packet_queue.last + 1) % MARI_PACKET_QUEUE_SIZE;
+    if (next_last == queue_vars.packet_queue.current) {
+        // Queue full: drop this packet (do NOT overwrite unsent packets)
+        queue_vars.queue_locked = false;
+        return;
+    }
+
     // enqueue for transmission
     memcpy(queue_vars.packet_queue.packets[queue_vars.packet_queue.last].buffer, packet, length);
     queue_vars.packet_queue.packets[queue_vars.packet_queue.last].length = length;
     // increment the `last` index
-    queue_vars.packet_queue.last = (queue_vars.packet_queue.last + 1) % MARI_PACKET_QUEUE_SIZE;
+    queue_vars.packet_queue.last = next_last;
 
     queue_vars.queue_locked = false;
 }
@@ -165,6 +196,13 @@ void mr_queue_reset(void) {
     queue_vars.join_packet.length   = 0;
     queue_vars.queue_locked         = false;
     memset(queue_vars.join_packet.buffer, 0, sizeof(queue_vars.join_packet.buffer));
+
+    queue_vars.joinresp_queue.current = 0;
+    queue_vars.joinresp_queue.last    = 0;
+    for (size_t i = 0; i < MARI_JOIN_RESPONSE_QUEUE_SIZE; i++) {
+        queue_vars.joinresp_queue.packets[i].length = 0;
+        memset(queue_vars.joinresp_queue.packets[i].buffer, 0, sizeof(queue_vars.joinresp_queue.packets[i].buffer));
+    }
 }
 
 void mr_queue_set_join_request(uint64_t node_id) {
@@ -172,10 +210,24 @@ void mr_queue_set_join_request(uint64_t node_id) {
 }
 
 void mr_queue_set_join_response(uint64_t node_id, uint8_t assigned_cell_id, uint8_t flag_attest) {
-    uint8_t len                          = mr_build_packet_join_response(queue_vars.join_packet.buffer, node_id);
-    queue_vars.join_packet.buffer[len++] = assigned_cell_id;
-    queue_vars.join_packet.buffer[len++] = flag_attest;
-    queue_vars.join_packet.length        = len;
+    // uint8_t len                          = mr_build_packet_join_response(queue_vars.join_packet.buffer, node_id);
+    // queue_vars.join_packet.buffer[len++] = assigned_cell_id;
+    // queue_vars.join_packet.buffer[len++] = flag_attest;
+    // queue_vars.join_packet.length        = len;
+    // Gateway-only: enqueue JOIN_RESPONSE into FIFO (do not overwrite others)
+    uint8_t next_last = (queue_vars.joinresp_queue.last + 1) % MARI_JOIN_RESPONSE_QUEUE_SIZE;
+    if (next_last == queue_vars.joinresp_queue.current) {
+        // FIFO full -> drop this join response (node will retry)
+        return;
+    }
+
+    mr_packet_t *jp = &queue_vars.joinresp_queue.packets[queue_vars.joinresp_queue.last];
+    uint8_t len     = mr_build_packet_join_response(jp->buffer, node_id);
+    jp->buffer[len++] = assigned_cell_id;
+    jp->buffer[len++] = flag_attest;
+    jp->length        = len;
+
+    queue_vars.joinresp_queue.last = next_last;
 }
 
 bool mr_queue_has_join_packet(void) {

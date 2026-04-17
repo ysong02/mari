@@ -65,12 +65,14 @@ mr_gpio_t led3 = { .port = 0, .pin = 31 };
 #define MARI_JOIN_TIMEOUT_SINCE_SYNCED (1000 * 1000 * 5)  // 5 seconds. after this time, go back to scanning. NOTE: have it be based on slotframe size?
 
 // temporary for attestation test
-#define MARI_ATTEST_NOT_JOIN (1000 * 1000 * 10)
+// #define MARI_ATTEST_NOT_JOIN (1000 * 1000 * 10)
+#define MARI_ATTEST_TIMEOUT_SLOTFRAMES 50
 
 // after this amount of time, consider that a join request failed (very likely due to a collision during the shared uplink slot)
 // currently set to 2 slot durations -- enough when the schedule always have a shared-uplink followed by a downlink,
 // and the gateway prioritizes join responses over all other downstream packets
-#define MARI_JOINING_STATE_TIMEOUT ((MARI_WHOLE_SLOT_DURATION * (2 - 1)) + (MARI_WHOLE_SLOT_DURATION / 2))  // apply a half-slot duration just so that the timeout happens before the slot boundary
+// #define MARI_JOINING_STATE_TIMEOUT ((MARI_WHOLE_SLOT_DURATION * (2 - 1)) + (MARI_WHOLE_SLOT_DURATION / 2))  // apply a half-slot duration just so that the timeout happens before the slot boundary
+#define MARI_JOINING_STATE_TIMEOUT ((MARI_WHOLE_SLOT_DURATION * 2) + (MARI_WHOLE_SLOT_DURATION))  // apply a half-slot duration just so that the timeout happens before the slot boundary
 
 typedef struct {
     mr_assoc_state_t state;
@@ -91,9 +93,9 @@ typedef struct {
 
 assoc_vars_t assoc_vars = { 0 };
 // for attestation
-static bool is_attesting = false;
-//temporary for attestation test
-static uint32_t rejoin_not_before_ts = 0; 
+// static bool is_attesting = false;
+// temporary for attestation test
+// static uint32_t rejoin_not_before_ts = 0;
 //=========================== prototypes ======================================
 // for attestation, to add asn_dl in gateway
 static cell_t *mr_assoc_gateway_find_cell_by_node(uint64_t node_id);
@@ -174,11 +176,11 @@ uint16_t mr_assoc_get_network_id(void) {
 
 void mr_assoc_node_handle_synced(void) {
     // temporary for attestation test
-    uint32_t now = mr_timer_hf_now(MARI_TIMER_DEV);
-    if (rejoin_not_before_ts && now < rejoin_not_before_ts) {
-        // attestation failed, stay synced but do not queue join
-        return; 
-    }
+    // uint32_t now = mr_timer_hf_now(MARI_TIMER_DEV);
+    // if (rejoin_not_before_ts && now < rejoin_not_before_ts) {
+    //     // attestation failed, stay synced but do not queue join
+    //     return;
+    // }
     mr_assoc_set_state(JOIN_STATE_SYNCED);
     mr_assoc_node_init_backoff();  // ensure we start the joining procedure already with a backoff
     mr_queue_set_join_request(mr_mac_get_synced_gateway());
@@ -323,7 +325,7 @@ void mr_assoc_node_keep_gateway_alive(uint64_t asn) {
 void mr_assoc_node_handle_pending_disconnect(void) {
     mr_assoc_set_state(JOIN_STATE_IDLE);
     mr_scheduler_node_deassign_myself_from_schedule();
-    rejoin_not_before_ts = MARI_ATTEST_NOT_JOIN;
+    // rejoin_not_before_ts = MARI_ATTEST_NOT_JOIN;
     mr_event_data_t event_data = {
         .data.gateway_info.gateway_id = mr_mac_get_synced_gateway(),
         .tag                          = assoc_vars.is_pending_disconnect
@@ -351,17 +353,17 @@ bool mr_assoc_node_matches_network_id(uint16_t network_id) {
 }
 
 // for attestation
-void mr_assoc_set_attesting(bool required) {
-    is_attesting = required;
-}
+// void mr_assoc_set_attesting(bool required) {
+//     is_attesting = required;
+// }
 
-bool mr_assoc_is_attesting(void) {
-    return is_attesting;
-}
+// bool mr_assoc_is_attesting(void) {
+//     return is_attesting;
+// }
 
-void mr_assoc_set_attestation_ok(void) {
-    is_attesting = false;
-}
+// void mr_assoc_set_attestation_ok(void) {
+//     is_attesting = false;
+// }
 // ------------ gateway functions ---------
 
 bool mr_assoc_gateway_node_is_joined(uint64_t node_id) {
@@ -408,7 +410,7 @@ void mr_assoc_gateway_clear_old_nodes(uint64_t asn) {
             continue;
         }
         cell_t *cell = &schedule->cells[i];
-        if (cell->assigned_node_id != 0 && asn - cell->last_received_asn > max_asn_old) {
+        if (cell->assigned_node_id != 0 && asn - cell->last_received_asn > max_asn_old && assoc_vars.state == JOIN_STATE_JOINED) {
             mr_event_data_t event_data = (mr_event_data_t){ .data.node_info.node_id = cell->assigned_node_id, .tag = MARI_PEER_LOST_TIMEOUT };
             // inform the scheduler
             mr_scheduler_gateway_decrease_nodes_counter();
@@ -463,14 +465,42 @@ bool mr_assoc_gateway_force_remove_node(uint64_t node_id, mr_event_tag_t reason)
             cell->assigned_node_id  = NULL;
             cell->last_received_asn = 0;
             // inform the application
-            cell->is_attesting      = false;
+            cell->is_attesting = false;
 
-            mr_event_data_t event_data = (mr_event_data_t){ .data.node_info.node_id = node_id, .tag = reason};
+            mr_event_data_t event_data = (mr_event_data_t){ .data.node_info.node_id = node_id, .tag = reason };
             assoc_vars.mari_event_callback(MARI_NODE_LEFT, event_data);
             return true;
-        }   
+        }
     }
     return false;
+}
+
+void mr_assoc_gateway_check_attestation_timeouts(uint64_t asn_now) {
+    // How long we tolerate a node being in 'attesting' state:
+    uint64_t max_delta_asn =
+        (uint64_t)mr_scheduler_get_active_schedule_slot_count() * (uint64_t)MARI_ATTEST_TIMEOUT_SLOTFRAMES;
+
+    schedule_t *schedule = mr_scheduler_get_active_schedule_ptr();
+    for (size_t i = 0; i < schedule->n_cells; i++) {
+        cell_t *cell = &schedule->cells[i];
+
+        if (cell->type != SLOT_TYPE_UPLINK) {
+            continue;
+        }
+        if (cell->assigned_node_id == 0) {
+            continue;
+        }
+        if (!cell->is_attesting) {
+            continue;
+        }
+
+        // attestation started when we sent the join response
+        uint64_t asn_dl = cell->attest_asn_dl;
+
+        if (asn_now - asn_dl > max_delta_asn) {
+            mr_assoc_gateway_force_remove_node(cell->assigned_node_id, MARI_PEER_LOST_TIMEOUT);
+        }
+    }
 }
 // ------------ packet handlers -------
 

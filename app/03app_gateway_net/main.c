@@ -76,7 +76,7 @@ static void _init_ipc(void) {
 }
 
 int main(void) {
-    printf("Hello Mari Gateway Net Core %016llX\n", mr_device_id());
+    // printf("Hello Mari Gateway Net Core %016llX\n", mr_device_id());
     mr_timer_hf_init(MARI_APP_TIMER_DEV);
     _init_ipc();
     mari_init(MARI_GATEWAY, 0xa3, schedule_app, &_mari_event_callback);
@@ -97,8 +97,8 @@ int main(void) {
             mr_event_t      event      = _app_vars.mari_event;
             mr_event_data_t event_data = _app_vars.mari_event_data;
 
-            uint32_t now_ts_s     = mr_timer_hf_now(MARI_APP_TIMER_DEV) / 1000 / 1000;
-            bool     send_to_uart = false;
+            // uint32_t now_ts_s     = mr_timer_hf_now(MARI_APP_TIMER_DEV) / 1000 / 1000;
+            bool send_to_uart = false;
             switch (event) {
                 case MARI_NEW_PACKET:
                 {
@@ -120,7 +120,7 @@ int main(void) {
                     send_to_uart = true;
                     break;
                 case MARI_NODE_JOINED:
-                    printf("%d New node joined: %016llX  (%d nodes connected)\n", now_ts_s, event_data.data.node_info.node_id, mari_gateway_count_nodes());
+                    // printf("%d New node joined: %016llX  (%d nodes connected)\n", now_ts_s, event_data.data.node_info.node_id, mari_gateway_count_nodes());
                     metrics_add_node(event_data.data.node_info.node_id);
                     ipc_shared_data.radio_to_uart_len = 1 + sizeof(uint64_t);
                     ipc_shared_data.radio_to_uart[0]  = MARI_EDGE_NODE_JOINED;
@@ -128,7 +128,7 @@ int main(void) {
                     send_to_uart = true;
                     break;
                 case MARI_NODE_LEFT:
-                    printf("%d Node left: %016llX, reason: %u  (%d nodes connected)\n", now_ts_s, event_data.data.node_info.node_id, event_data.tag, mari_gateway_count_nodes());
+                    // printf("%d Node left: %016llX, reason: %u  (%d nodes connected)\n", now_ts_s, event_data.data.node_info.node_id, event_data.tag, mari_gateway_count_nodes());
                     metrics_clear_node(event_data.data.node_info.node_id);
                     ipc_shared_data.radio_to_uart_len = 1 + sizeof(uint64_t);
                     ipc_shared_data.radio_to_uart[0]  = MARI_EDGE_NODE_LEFT;
@@ -136,7 +136,7 @@ int main(void) {
                     send_to_uart = true;
                     break;
                 case MARI_ERROR:
-                    printf("Error, reason: %u\n", event_data.tag);
+                    // printf("Error, reason: %u\n", event_data.tag);
                     break;
                 default:
                     break;
@@ -151,7 +151,7 @@ int main(void) {
             _app_vars.uart_to_radio_packet_ready = false;
             uint8_t packet_type                  = ipc_shared_data.uart_to_radio_tx[0];
             if (packet_type != MARI_EDGE_DATA) {
-                printf("Invalid UART packet type: %02X\n", packet_type);
+                // printf("Invalid UART packet type: %02X\n", packet_type);
                 continue;
             }
 
@@ -159,27 +159,27 @@ int main(void) {
             uint8_t  mari_frame_len = ipc_shared_data.uart_to_radio_len - 1;
             // for attestation, check if it is verification response
             if (mari_frame_len > sizeof(mr_packet_header_t)) {
-                    uint8_t *payload            = mari_frame + sizeof(mr_packet_header_t);
-                    uint8_t  first_payload_byte = payload[0];
+                uint8_t *payload            = mari_frame + sizeof(mr_packet_header_t);
+                uint8_t  first_payload_byte = payload[0];
 
-                    if (first_payload_byte == 0xE3) {
-                        uint8_t result = payload[1];
+                if (first_payload_byte == 0xE3) {
+                    uint8_t result = payload[1];
 
-                        mr_packet_header_t *header = (mr_packet_header_t *)mari_frame;
-                        uint64_t node_id = header->dst;
+                    mr_packet_header_t *header  = (mr_packet_header_t *)mari_frame;
+                    uint64_t            node_id = header->dst;
 
-                        if (result == 0x00) {
-                            printf("attestation fail: removing node %016llX\n", node_id);
-                            if (! mr_assoc_gateway_force_remove_node(node_id, MARI_ATTESTATION_FAILED)) {
-                                printf("tried to remove node but it was not found: node %016llX\n", node_id);
-                            }
-                            continue;
-                        } else if (result == 0x01) {
-                            printf("attestation success: node %016llX\n", node_id);
-                            mr_assoc_gateway_set_attesting(node_id, false);
+                    if (result == 0x00) {
+                        // printf("attestation fail: removing node %016llX\n", node_id);
+                        if (!mr_assoc_gateway_force_remove_node(node_id, MARI_ATTESTATION_FAILED)) {
+                            // printf("tried to remove node but it was not found: node %016llX\n", node_id);
                         }
+                        continue;
+                    } else if (result == 0x01) {
+                        // printf("attestation success: node %016llX\n", node_id);
+                        mr_assoc_gateway_set_attesting(node_id, false);
                     }
                 }
+            }
 
             mr_packet_header_t *header = (mr_packet_header_t *)mari_frame;
             header->src                = mr_device_id();

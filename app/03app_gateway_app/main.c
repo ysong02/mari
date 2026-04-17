@@ -48,7 +48,7 @@ typedef struct {
     uint8_t    tx_queue_count;
 } gateway_app_vars_t;
 
-//=========================== variables ======================================== 
+//=========================== variables ========================================
 
 // UART RX and TX pins
 static const mr_gpio_t _mr_uart_tx_pin = { .port = 1, .pin = 1 };

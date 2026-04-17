@@ -84,7 +84,7 @@ static void send_beacon_prepare(void) {
 
 static void send_beacon_dispatch(void) {
     mr_radio_tx_dispatch();
-    DEBUG_GPIO_CLEAR(&pin0);
+    // DEBUG_GPIO_CLEAR(&pin0);
 
     // beacon = 20 bytes = TOA 80 us
     // schedule radio for RX in 200 us

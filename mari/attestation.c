@@ -127,11 +127,8 @@ bool mr_attestation_send_verif_req(uint8_t *packet, uint8_t *length) {
         memcpy(payload_ptr, vr_buf, vr_len);
 
         *length = vr_len + sizeof(mr_packet_header_t);
-        return true;
-    } else {
-        // only not sending packet returns false, so here it is still true
-        return true;
     }
+    return true;
 }
 
 //=========================== private ==========================================

@@ -27,6 +27,7 @@
 #include "mari.h"
 
 #include "attestation.h"
+#include <stdio.h>
 
 //=========================== defines ==========================================
 
@@ -39,6 +40,8 @@ typedef struct {
 
 static mari_vars_t _mari_vars = { 0 };
 
+static volatile bool     _attest_evt_pending = false;
+static volatile uint64_t _attest_gateway_id  = 0;
 //=========================== prototypes =======================================
 
 static void event_callback(mr_event_t event, mr_event_data_t event_data);
@@ -152,6 +155,9 @@ bool mr_handle_packet(uint8_t *packet, uint8_t length) {
                 // NOTE: we accept re-joins because of possible collisions on the join response (downlink)
                 int16_t cell_id = mr_scheduler_gateway_assign_next_available_uplink_cell(header->src, mr_mac_get_asn());
                 if (cell_id >= 0) {
+                    // if (mr_queue_has_join_packet()) {
+                    //     break;
+                    // }
                     // at the packet level, max_nodes is limited to 256 (using uint8_t cell_id)
                     mr_queue_set_join_response(header->src, (uint8_t)cell_id, flag_attest);
                     // set the dirty flag that will trigger the event loop to compute the bloom filter
@@ -169,7 +175,7 @@ bool mr_handle_packet(uint8_t *packet, uint8_t length) {
                     return false;
                 }
 
-                // attestation: if packet has evidence, generates the verif_req
+                // attestation: if packet has evidence, generates the verif_req; if not attesting, no change to the packet
                 if (!mr_attestation_send_verif_req(packet, &length)) {
                     return false;
                 }
@@ -231,9 +237,11 @@ bool mr_handle_packet(uint8_t *packet, uint8_t length) {
                     mr_assoc_node_handle_joined(header->src);
                     if (flag_attest) {
                         // set state is_attesting, go MARI_ATTESTATION event
-                        mr_assoc_set_attesting(true);
-                        mr_event_data_t ed = { .data.gateway_info.gateway_id = header->src };
-                        _mari_vars.app_event_callback(MARI_ATTESTATION, ed);
+                        // mr_assoc_set_attesting(true);
+                        // mr_event_data_t ed = { .data.gateway_info.gateway_id = header->src };
+                        // _mari_vars.app_event_callback(MARI_ATTESTATION, ed);
+                        _attest_gateway_id  = header->src;
+                        _attest_evt_pending = true;
                     }
                 } else {
                     _mari_vars.app_event_callback(MARI_ERROR, (mr_event_data_t){ 0 });
@@ -277,10 +285,27 @@ void mari_event_loop(void) {
     // process the event loop
     switch (mari_get_node_type()) {
         case MARI_GATEWAY:
+        {
+            // check attestation timeouts
+            uint64_t asn_now = mr_mac_get_asn();
+            mr_assoc_gateway_check_attestation_timeouts(asn_now);
+
             mr_bloom_gateway_event_loop();
             break;
+        }
         case MARI_NODE:
-            break;
+            // break;
+            {
+                if (_attest_evt_pending) {
+                    _attest_evt_pending = false;
+
+                    if (_mari_vars.app_event_callback) {
+                        mr_event_data_t ed = { .data.gateway_info.gateway_id = _attest_gateway_id };
+                        _mari_vars.app_event_callback(MARI_ATTESTATION, ed);
+                    }
+                }
+                break;
+            }
     }
 }
 
