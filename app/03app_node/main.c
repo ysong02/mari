@@ -47,8 +47,8 @@ typedef struct {
     bool            led_blink_state;  // for blinking when not connected
     bool            send_status_ready;
 
-    bool            attest_active; // true after receiving MARI_ATTESTATION
-    bool            attest_evidence_queued; // true once we enqueued evidence
+    bool attest_active;           // true after receiving MARI_ATTESTATION
+    bool attest_evidence_queued;  // true once we enqueued evidence
 } node_vars_t;
 
 typedef struct __attribute__((packed)) {
@@ -154,7 +154,7 @@ int main(void) {
                     // printf("Connected to gateway %016llX\n", gateway_id);
                     board_set_led_mari_gateway(gateway_id);
                     board_set_led_mari(YELLOW);
-                    node_vars.attest_active = false;
+                    node_vars.attest_active          = false;
                     node_vars.attest_evidence_queued = false;
                     break;
                 }
@@ -163,13 +163,13 @@ int main(void) {
                     // uint64_t gateway_id = event_data.data.gateway_info.gateway_id;
                     // printf("Disconnected from gateway %016llX, reason: %u\n", gateway_id, event_data.tag);
                     board_set_led_mari(OFF);
-                    node_vars.attest_active = false;
+                    node_vars.attest_active          = false;
                     node_vars.attest_evidence_queued = false;
                     break;
                 }
                 case MARI_ATTESTATION:
                 {
-                    node_vars.attest_active = true;
+                    node_vars.attest_active          = true;
                     node_vars.attest_evidence_queued = false;
 
                     uint8_t payload[MAX_EVIDENCE];
