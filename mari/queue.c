@@ -46,9 +46,9 @@ typedef struct {
 } mari_joinresp_queue_t;
 
 typedef struct {
-    mari_packet_queue_t packet_queue;
-    bool                queue_locked;  ///< Simple lock to prevent concurrent access
-    mr_packet_t         join_packet;
+    mari_packet_queue_t   packet_queue;
+    bool                  queue_locked;  ///< Simple lock to prevent concurrent access
+    mr_packet_t           join_packet;
     mari_joinresp_queue_t joinresp_queue;  // gateway JOIN_RESPONSE FIFO
 } queue_vars_t;
 
@@ -221,8 +221,8 @@ void mr_queue_set_join_response(uint64_t node_id, uint8_t assigned_cell_id, uint
         return;
     }
 
-    mr_packet_t *jp = &queue_vars.joinresp_queue.packets[queue_vars.joinresp_queue.last];
-    uint8_t len     = mr_build_packet_join_response(jp->buffer, node_id);
+    mr_packet_t *jp   = &queue_vars.joinresp_queue.packets[queue_vars.joinresp_queue.last];
+    uint8_t      len  = mr_build_packet_join_response(jp->buffer, node_id);
     jp->buffer[len++] = assigned_cell_id;
     jp->buffer[len++] = flag_attest;
     jp->length        = len;

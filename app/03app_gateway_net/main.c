@@ -182,6 +182,8 @@ int main(void) {
 
                 if (first_payload_byte == 0xE3) {
                     uint8_t result = payload[1];
+                    // uint64_t asn_ul = payload[2];
+                    // uint64_t asn_now = mr_mac_get_asn();
 
                     mr_packet_header_t *header  = (mr_packet_header_t *)mari_frame;
                     uint64_t            node_id = header->dst;
@@ -193,8 +195,15 @@ int main(void) {
                         }
                         continue;
                     } else if (result == 0x01) {
+                        // if (asn_now - asn_ul < 500000){
                         // printf("attestation success: node %016llX\n", node_id);
                         mr_assoc_gateway_set_attesting(node_id, false);
+                        // }
+                        // else {
+                        //     if (!mr_assoc_gateway_force_remove_node(node_id, MARI_ATTESTATION_FAILED)) {
+                        //     // printf("tried to remove node but it was not found: node %016llX\n", node_id);
+                        //     }
+                        // }
                     }
                 }
             }

@@ -16,8 +16,8 @@
 
 // #include "partition.h"
 #include "attestation.h"
-#include "mr_sha256.h"
-#include "mr_ed25519.h"
+#include "sha256.h"
+#include "ed25519.h"
 #include "association.h"
 #include "mac.h"
 #include "mr_device.h"
