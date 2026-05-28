@@ -13,6 +13,7 @@
 #include <stdint.h>
 #include <stdio.h>
 #include <stdbool.h>
+#include <string.h>
 
 #include "mr_device.h"
 #include "mr_radio.h"
@@ -72,7 +73,7 @@ mr_gpio_t led3 = { .port = 0, .pin = 31 };
 // currently set to 2 slot durations -- enough when the schedule always have a shared-uplink followed by a downlink,
 // and the gateway prioritizes join responses over all other downstream packets
 // #define MARI_JOINING_STATE_TIMEOUT ((MARI_WHOLE_SLOT_DURATION * (2 - 1)) + (MARI_WHOLE_SLOT_DURATION / 2))  // apply a half-slot duration just so that the timeout happens before the slot boundary
-#define MARI_JOINING_STATE_TIMEOUT ((MARI_WHOLE_SLOT_DURATION * 2) + (MARI_WHOLE_SLOT_DURATION))  // apply a half-slot duration just so that the timeout happens before the slot boundary
+#define MARI_JOINING_STATE_TIMEOUT (MARI_WHOLE_SLOT_DURATION * 30)  // extended to allow UART roundtrip (~15 ms) + next D slot gap (~10 ms) before node retries join
 
 typedef struct {
     mr_assoc_state_t state;
@@ -505,7 +506,6 @@ void mr_assoc_gateway_check_attestation_timeouts(uint64_t asn_now) {
 // ------------ packet handlers -------
 
 void mr_assoc_handle_beacon(uint8_t *packet, uint8_t length, uint8_t channel, uint32_t ts) {
-    (void)length;
 
     if (packet[1] != MARI_PACKET_BEACON) {
         return;
@@ -544,6 +544,19 @@ void mr_assoc_handle_beacon(uint8_t *packet, uint8_t length, uint8_t channel, ui
     if (beacon->remaining_capacity == 0) {  // TODO: what if I am joined to this gateway? add a check for it.
         // this gateway is full, ignore it
         return;
+    }
+
+    // extract EDHOC msg1 if present after bloom filter
+    uint8_t beacon_hdr_len = sizeof(mr_beacon_packet_header_t);
+    if (length > beacon_hdr_len + 2 && packet[beacon_hdr_len] == MARI_EDHOC_PAYLOAD_TAG) {
+        uint8_t edhoc_len = packet[beacon_hdr_len + 1];
+        if (edhoc_len > 0 && edhoc_len <= MARI_EDHOC_MAX_MSG_LEN &&
+            (uint8_t)(beacon_hdr_len + 2 + edhoc_len) <= length) {
+            mr_event_data_t edhoc_event = { 0 };
+            edhoc_event.data.edhoc.len = edhoc_len;
+            memcpy(edhoc_event.data.edhoc.data, packet + beacon_hdr_len + 2, edhoc_len);
+            assoc_vars.mari_event_callback(MARI_EDHOC_MSG1, edhoc_event);
+        }
     }
 
     // save this scan info

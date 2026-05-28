@@ -28,6 +28,26 @@
 
 //=========================== defines ==========================================
 
+#define EDHOC_MSG3_ENTRIES MARI_JOIN_RESPONSE_QUEUE_SIZE
+
+// How many slots to wait for msg3 before sending join response without it (fallback).
+// The UART roundtrip (edge processes msg2, returns msg3) is ~10-30 ms; 30 slots ~300 ms is ample.
+#define JOINRESP_WAIT_TIMEOUT_SLOTS 30
+
+typedef struct {
+    uint64_t node_id;
+    uint8_t  data[MARI_EDHOC_MAX_MSG_LEN];
+    uint8_t  len;
+} edhoc_msg3_entry_t;
+
+typedef struct {
+    bool     valid;
+    uint64_t node_id;
+    uint8_t  cell_id;
+    uint8_t  flag_attest;
+    uint64_t created_asn;
+} pending_joinresp_t;
+
 typedef struct {
     uint8_t length;
     uint8_t buffer[MARI_PACKET_MAX_SIZE];
@@ -56,7 +76,21 @@ typedef struct {
 
 static queue_vars_t queue_vars = { 0 };
 
+// EDHOC storage (gateway side)
+static uint8_t edhoc_msg1_data[MARI_EDHOC_MAX_MSG_LEN] = { 0 };
+static uint8_t edhoc_msg1_len                          = 0;
+static edhoc_msg3_entry_t edhoc_msg3_entries[EDHOC_MSG3_ENTRIES] = { 0 };
+
+// EDHOC msg2 pending buffer (node side): saved when msg2 arrives before join packet is prepared
+static uint8_t pending_msg2_data[MARI_EDHOC_MAX_MSG_LEN] = { 0 };
+static uint8_t pending_msg2_len                          = 0;
+
+// Gateway side: join response held until msg3 arrives from the edge
+static pending_joinresp_t pending_joinresp = { 0 };
+
 //=========================== prototypes =======================================
+
+static void _finalize_join_response(uint64_t node_id, uint8_t cell_id, uint8_t flag_attest);
 
 //=========================== public ===========================================
 
@@ -72,9 +106,29 @@ uint8_t mr_queue_next_packet(slot_type_t slot_type, uint8_t *packet) {
                 mr_mac_get_asn(),
                 mr_scheduler_gateway_remaining_capacity(),
                 mr_scheduler_get_active_schedule_id());
+            // append EDHOC msg1 if available
+            if (edhoc_msg1_len > 0 && (len + 2 + edhoc_msg1_len) <= MARI_PACKET_MAX_SIZE) {
+                packet[len++] = MARI_EDHOC_PAYLOAD_TAG;
+                packet[len++] = edhoc_msg1_len;
+                memcpy(packet + len, edhoc_msg1_data, edhoc_msg1_len);
+                len += edhoc_msg1_len;
+            }
         } else if (slot_type == SLOT_TYPE_DOWNLINK) {
-            // if (mr_queue_has_join_packet()) {
-            //     len = mr_queue_get_join_packet(packet);
+            // Finalize any pending join response once msg3 has arrived (or timeout elapsed)
+            if (pending_joinresp.valid) {
+                bool msg3_ready = false;
+                for (uint8_t i = 0; i < EDHOC_MSG3_ENTRIES; i++) {
+                    if (edhoc_msg3_entries[i].node_id == pending_joinresp.node_id && edhoc_msg3_entries[i].len > 0) {
+                        msg3_ready = true;
+                        break;
+                    }
+                }
+                bool timed_out = (mr_mac_get_asn() - pending_joinresp.created_asn) >= JOINRESP_WAIT_TIMEOUT_SLOTS;
+                if (msg3_ready || timed_out) {
+                    _finalize_join_response(pending_joinresp.node_id, pending_joinresp.cell_id, pending_joinresp.flag_attest);
+                    pending_joinresp.valid = false;
+                }
+            }
             // Priority 1: JOIN_RESPONSE FIFO
             if (queue_vars.joinresp_queue.current != queue_vars.joinresp_queue.last) {
                 mr_packet_t *jp = &queue_vars.joinresp_queue.packets[queue_vars.joinresp_queue.current];
@@ -196,6 +250,8 @@ void mr_queue_reset(void) {
     queue_vars.join_packet.length   = 0;
     queue_vars.queue_locked         = false;
     memset(queue_vars.join_packet.buffer, 0, sizeof(queue_vars.join_packet.buffer));
+    pending_msg2_len                = 0;
+    pending_joinresp.valid          = false;
 
     queue_vars.joinresp_queue.current = 0;
     queue_vars.joinresp_queue.last    = 0;
@@ -207,27 +263,54 @@ void mr_queue_reset(void) {
 
 void mr_queue_set_join_request(uint64_t node_id) {
     queue_vars.join_packet.length = mr_build_packet_join_request(queue_vars.join_packet.buffer, node_id);
+    // auto-append msg2 if it was already generated before this call
+    if (pending_msg2_len > 0) {
+        uint8_t cur_len = queue_vars.join_packet.length;
+        if ((cur_len + 2 + pending_msg2_len) <= MARI_PACKET_MAX_SIZE) {
+            queue_vars.join_packet.buffer[cur_len++] = MARI_EDHOC_PAYLOAD_TAG;
+            queue_vars.join_packet.buffer[cur_len++] = pending_msg2_len;
+            memcpy(queue_vars.join_packet.buffer + cur_len, pending_msg2_data, pending_msg2_len);
+            queue_vars.join_packet.length = cur_len + pending_msg2_len;
+        }
+    }
 }
 
-void mr_queue_set_join_response(uint64_t node_id, uint8_t assigned_cell_id, uint8_t flag_attest) {
-    // uint8_t len                          = mr_build_packet_join_response(queue_vars.join_packet.buffer, node_id);
-    // queue_vars.join_packet.buffer[len++] = assigned_cell_id;
-    // queue_vars.join_packet.buffer[len++] = flag_attest;
-    // queue_vars.join_packet.length        = len;
-    // Gateway-only: enqueue JOIN_RESPONSE into FIFO (do not overwrite others)
+// Build the join response packet (with msg3 if available) and add it to the FIFO.
+static void _finalize_join_response(uint64_t node_id, uint8_t cell_id, uint8_t flag_attest) {
     uint8_t next_last = (queue_vars.joinresp_queue.last + 1) % MARI_JOIN_RESPONSE_QUEUE_SIZE;
     if (next_last == queue_vars.joinresp_queue.current) {
-        // FIFO full -> drop this join response (node will retry)
-        return;
+        return;  // FIFO full, drop (node will retry)
     }
 
     mr_packet_t *jp   = &queue_vars.joinresp_queue.packets[queue_vars.joinresp_queue.last];
     uint8_t      len  = mr_build_packet_join_response(jp->buffer, node_id);
-    jp->buffer[len++] = assigned_cell_id;
+    jp->buffer[len++] = cell_id;
     jp->buffer[len++] = flag_attest;
-    jp->length        = len;
-
+    for (uint8_t i = 0; i < EDHOC_MSG3_ENTRIES; i++) {
+        if (edhoc_msg3_entries[i].node_id == node_id && edhoc_msg3_entries[i].len > 0) {
+            if ((len + 2 + edhoc_msg3_entries[i].len) <= MARI_PACKET_MAX_SIZE) {
+                jp->buffer[len++] = MARI_EDHOC_PAYLOAD_TAG;
+                jp->buffer[len++] = edhoc_msg3_entries[i].len;
+                memcpy(jp->buffer + len, edhoc_msg3_entries[i].data, edhoc_msg3_entries[i].len);
+                len += edhoc_msg3_entries[i].len;
+            }
+            edhoc_msg3_entries[i].node_id = 0;
+            edhoc_msg3_entries[i].len     = 0;
+            break;
+        }
+    }
+    jp->length                     = len;
     queue_vars.joinresp_queue.last = next_last;
+}
+
+void mr_queue_set_join_response(uint64_t node_id, uint8_t assigned_cell_id, uint8_t flag_attest) {
+    // Hold the join response until msg3 arrives from the edge.
+    // _finalize_join_response() is called from mr_queue_next_packet() once msg3 is ready.
+    pending_joinresp.valid       = true;
+    pending_joinresp.node_id     = node_id;
+    pending_joinresp.cell_id     = assigned_cell_id;
+    pending_joinresp.flag_attest = flag_attest;
+    pending_joinresp.created_asn = mr_mac_get_asn();
 }
 
 bool mr_queue_has_join_packet(void) {
@@ -244,4 +327,65 @@ uint8_t mr_queue_get_join_packet(uint8_t *packet) {
     queue_vars.join_packet.length = 0;
 
     return len;
+}
+
+void mr_queue_set_edhoc_msg1(uint8_t *data, uint8_t len) {
+    if (len > MARI_EDHOC_MAX_MSG_LEN) {
+        len = MARI_EDHOC_MAX_MSG_LEN;
+    }
+    memcpy(edhoc_msg1_data, data, len);
+    edhoc_msg1_len = len;
+}
+
+void mr_queue_set_edhoc_msg3(uint64_t node_id, uint8_t *data, uint8_t len) {
+    if (len > MARI_EDHOC_MAX_MSG_LEN) {
+        len = MARI_EDHOC_MAX_MSG_LEN;
+    }
+    // find existing entry or free slot
+    for (uint8_t i = 0; i < EDHOC_MSG3_ENTRIES; i++) {
+        if (edhoc_msg3_entries[i].node_id == node_id || edhoc_msg3_entries[i].node_id == 0) {
+            edhoc_msg3_entries[i].node_id = node_id;
+            edhoc_msg3_entries[i].len     = len;
+            memcpy(edhoc_msg3_entries[i].data, data, len);
+            // Finalize the pending join response immediately so it is queued in the FIFO
+            // before the next downlink slot fires. Waiting until the downlink slot to check
+            // is too late: the node times out after 3 slots (~30 ms) if no response arrives.
+            if (pending_joinresp.valid && pending_joinresp.node_id == node_id) {
+                _finalize_join_response(pending_joinresp.node_id, pending_joinresp.cell_id, pending_joinresp.flag_attest);
+                pending_joinresp.valid = false;
+            }
+            return;
+        }
+    }
+    // no space: overwrite slot 0
+    edhoc_msg3_entries[0].node_id = node_id;
+    edhoc_msg3_entries[0].len     = len;
+    memcpy(edhoc_msg3_entries[0].data, data, len);
+    if (pending_joinresp.valid && pending_joinresp.node_id == node_id) {
+        _finalize_join_response(pending_joinresp.node_id, pending_joinresp.cell_id, pending_joinresp.flag_attest);
+        pending_joinresp.valid = false;
+    }
+}
+
+void mr_queue_append_edhoc_to_join_request(uint8_t *data, uint8_t len) {
+    if (len > MARI_EDHOC_MAX_MSG_LEN) {
+        len = MARI_EDHOC_MAX_MSG_LEN;
+    }
+    // always save msg2 so mr_queue_set_join_request can append it even if called later
+    memcpy(pending_msg2_data, data, len);
+    pending_msg2_len = len;
+
+    if (queue_vars.join_packet.length < sizeof(mr_packet_header_t)) {
+        // join packet not prepared yet; mr_queue_set_join_request will append msg2 when called
+        return;
+    }
+    // join packet already exists: reset to base and append msg2 now
+    uint8_t cur_len = sizeof(mr_packet_header_t);
+    if ((cur_len + 2 + len) > MARI_PACKET_MAX_SIZE) {
+        return;
+    }
+    queue_vars.join_packet.buffer[cur_len++] = MARI_EDHOC_PAYLOAD_TAG;
+    queue_vars.join_packet.buffer[cur_len++] = len;
+    memcpy(queue_vars.join_packet.buffer + cur_len, data, len);
+    queue_vars.join_packet.length = cur_len + len;
 }

@@ -38,6 +38,9 @@
 
 #define MARI_STATS_SCHED_USAGE_SIZE 4  // supports schedules with up to 256 cells
 
+#define MARI_EDHOC_PAYLOAD_TAG 0xED
+#define MARI_EDHOC_MAX_MSG_LEN 150
+
 //=========================== types ============================================
 
 // -------- types sent over the air --------
@@ -91,8 +94,10 @@ typedef enum {
     MARI_NODE_LEFT,
     MARI_KEEPALIVE,
     MARI_ERROR,
-    // add attestation event
-    MARI_ATTESTATION
+    MARI_ATTESTATION,
+    MARI_EDHOC_MSG1,  ///< Node received EDHOC msg1 in beacon
+    MARI_EDHOC_MSG2,  ///< Gateway received EDHOC msg2 in join request
+    MARI_EDHOC_MSG3,  ///< Node received EDHOC msg3 in join response
 } mr_event_t;
 
 typedef enum {
@@ -124,6 +129,11 @@ typedef struct {
         struct {
             uint64_t gateway_id;
         } gateway_info;
+        struct {
+            uint64_t node_id;
+            uint8_t  data[MARI_EDHOC_MAX_MSG_LEN];
+            uint8_t  len;
+        } edhoc;
     } data;
     mr_event_tag_t tag;
 } mr_event_data_t;
@@ -187,7 +197,15 @@ typedef enum {
     MARI_EDGE_DATA         = 3,
     MARI_EDGE_KEEPALIVE    = 4,
     MARI_EDGE_GATEWAY_INFO = 5,
+    MARI_EDGE_EDHOC        = 6,
 } mr_gateway_edge_type_t;
+
+typedef enum {
+    MARI_EDHOC_SUBTYPE_MSG1 = 1,
+    MARI_EDHOC_SUBTYPE_MSG2 = 2,
+    MARI_EDHOC_SUBTYPE_MSG3 = 3,
+    MARI_EDHOC_SUBTYPE_MSG4 = 4,
+} mr_edhoc_subtype_t;
 
 // uart packet for gateway info
 typedef struct __attribute__((packed)) {

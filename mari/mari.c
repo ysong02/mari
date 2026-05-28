@@ -149,15 +149,26 @@ bool mr_handle_packet(uint8_t *packet, uint8_t length) {
         switch (header->type) {
             case MARI_PACKET_JOIN_REQUEST:
             {
+                // check for EDHOC msg2 in join request payload
+                uint8_t *join_payload     = packet + sizeof(mr_packet_header_t);
+                uint8_t  join_payload_len = length - sizeof(mr_packet_header_t);
+                if (join_payload_len >= 2 && join_payload[0] == MARI_EDHOC_PAYLOAD_TAG) {
+                    uint8_t edhoc_len = join_payload[1];
+                    if (edhoc_len > 0 && edhoc_len <= MARI_EDHOC_MAX_MSG_LEN &&
+                        (uint8_t)(2 + edhoc_len) <= join_payload_len) {
+                        mr_event_data_t edhoc_event = { 0 };
+                        edhoc_event.data.edhoc.node_id = header->src;
+                        edhoc_event.data.edhoc.len     = edhoc_len;
+                        memcpy(edhoc_event.data.edhoc.data, join_payload + 2, edhoc_len);
+                        _mari_vars.app_event_callback(MARI_EDHOC_MSG2, edhoc_event);
+                    }
+                }
                 // try to assign a cell to the node
                 // the asn-based keep-alive is also initialized
                 // the hashes h1 and h2 are also set
                 // NOTE: we accept re-joins because of possible collisions on the join response (downlink)
                 int16_t cell_id = mr_scheduler_gateway_assign_next_available_uplink_cell(header->src, mr_mac_get_asn());
                 if (cell_id >= 0) {
-                    // if (mr_queue_has_join_packet()) {
-                    //     break;
-                    // }
                     // at the packet level, max_nodes is limited to 256 (using uint8_t cell_id)
                     mr_queue_set_join_response(header->src, (uint8_t)cell_id, flag_attest);
                     // set the dirty flag that will trigger the event loop to compute the bloom filter
@@ -233,13 +244,24 @@ bool mr_handle_packet(uint8_t *packet, uint8_t length) {
                 uint8_t cell_id = packet[sizeof(mr_packet_header_t)];
                 // the second byte after the header contains the flag_attest
                 uint8_t flag_attest = packet[sizeof(mr_packet_header_t) + 1];
+                // check for EDHOC msg3 after cell_id and flag_attest
+                if (length > sizeof(mr_packet_header_t) + 4) {
+                    uint8_t *jr_rest     = packet + sizeof(mr_packet_header_t) + 2;
+                    uint8_t  jr_rest_len = length - (uint8_t)sizeof(mr_packet_header_t) - 2;
+                    if (jr_rest[0] == MARI_EDHOC_PAYLOAD_TAG) {
+                        uint8_t edhoc_len = jr_rest[1];
+                        if (edhoc_len > 0 && edhoc_len <= MARI_EDHOC_MAX_MSG_LEN &&
+                            (uint8_t)(2 + edhoc_len) <= jr_rest_len) {
+                            mr_event_data_t edhoc_event = { 0 };
+                            edhoc_event.data.edhoc.len = edhoc_len;
+                            memcpy(edhoc_event.data.edhoc.data, jr_rest + 2, edhoc_len);
+                            _mari_vars.app_event_callback(MARI_EDHOC_MSG3, edhoc_event);
+                        }
+                    }
+                }
                 if (mr_scheduler_node_assign_myself_to_cell(cell_id)) {
                     mr_assoc_node_handle_joined(header->src);
                     if (flag_attest) {
-                        // set state is_attesting, go MARI_ATTESTATION event
-                        // mr_assoc_set_attesting(true);
-                        // mr_event_data_t ed = { .data.gateway_info.gateway_id = header->src };
-                        // _mari_vars.app_event_callback(MARI_ATTESTATION, ed);
                         _attest_gateway_id  = header->src;
                         _attest_evt_pending = true;
                     }

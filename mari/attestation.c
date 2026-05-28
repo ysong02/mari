@@ -44,7 +44,7 @@ typedef struct {
 
 //=========================== variables ========================================
 // temporary values
-uint8_t  flag_attest         = 1;
+uint8_t  flag_attest         = 0;  // disabled: pure EDHOC mode
 uint32_t expected_fw_version = 1;
 
 uint8_t hash[HASH_LEN] = { 0 };

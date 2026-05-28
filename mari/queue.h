@@ -40,4 +40,9 @@ void mr_queue_set_join_response(uint64_t node_id, uint8_t assigned_cell_id, uint
 bool    mr_queue_has_join_packet(void);
 uint8_t mr_queue_get_join_packet(uint8_t *packet);
 
+// EDHOC support
+void mr_queue_set_edhoc_msg1(uint8_t *data, uint8_t len);
+void mr_queue_set_edhoc_msg3(uint64_t node_id, uint8_t *data, uint8_t len);
+void mr_queue_append_edhoc_to_join_request(uint8_t *data, uint8_t len);
+
 #endif  // __QUEUE_H

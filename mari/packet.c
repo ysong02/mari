@@ -13,6 +13,7 @@
 #include "association.h"
 #include "packet.h"
 #include "mac.h"
+#include "mari.h"
 
 //=========================== prototypes =======================================
 
@@ -65,6 +66,7 @@ size_t mr_build_uart_packet_gateway_info(uint8_t *buffer) {
     memcpy(buffer, &gateway_info, sizeof(mr_uart_packet_gateway_info_t));
     return sizeof(mr_uart_packet_gateway_info_t);
 }
+
 
 //=========================== private ==========================================
 
