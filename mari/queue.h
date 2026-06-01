@@ -35,7 +35,7 @@ void    mr_queue_reset(void);
 
 // void mr_queue_set_join_packet(uint64_t node_id, mr_packet_type_t packet_type);
 void mr_queue_set_join_request(uint64_t node_id);
-void mr_queue_set_join_response(uint64_t node_id, uint8_t assigned_cell_id, uint8_t flag_attest);
+void mr_queue_set_join_response(uint64_t node_id, uint8_t assigned_cell_id);
 
 bool    mr_queue_has_join_packet(void);
 uint8_t mr_queue_get_join_packet(uint8_t *packet);

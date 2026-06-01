@@ -151,11 +151,15 @@ int main(void) {
                         uint8_t edhoc_len = event_data.data.new_packet.payload[1];
                         if (edhoc_len > 0 && (uint8_t)(2 + edhoc_len) <= event_data.data.new_packet.payload_len) {
                             uint8_t  *buf = (uint8_t *)ipc_shared_data.radio_to_uart;
-                            uint64_t  src = event_data.data.new_packet.header->src;
+                            uint64_t  src    = event_data.data.new_packet.header->src;
+                            uint64_t  asn_dl = 0;
+                            mr_assoc_gateway_get_attest_dl_asn(src, &asn_dl);
                             uint8_t   pos = 0;
                             buf[pos++]    = MARI_EDGE_EDHOC;
                             buf[pos++]    = MARI_EDHOC_SUBTYPE_MSG4;
                             memcpy(buf + pos, &src, sizeof(uint64_t));
+                            pos += sizeof(uint64_t);
+                            memcpy(buf + pos, &asn_dl, sizeof(uint64_t));
                             pos += sizeof(uint64_t);
                             memcpy(buf + pos, event_data.data.new_packet.payload + 2, edhoc_len);
                             pos += edhoc_len;

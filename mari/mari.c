@@ -26,7 +26,6 @@
 #include "bloom.h"
 #include "mari.h"
 
-#include "attestation.h"
 #include <stdio.h>
 
 //=========================== defines ==========================================
@@ -39,9 +38,6 @@ typedef struct {
 //=========================== variables ========================================
 
 static mari_vars_t _mari_vars = { 0 };
-
-static volatile bool     _attest_evt_pending = false;
-static volatile uint64_t _attest_gateway_id  = 0;
 //=========================== prototypes =======================================
 
 static void event_callback(mr_event_t event, mr_event_data_t event_data);
@@ -170,7 +166,7 @@ bool mr_handle_packet(uint8_t *packet, uint8_t length) {
                 int16_t cell_id = mr_scheduler_gateway_assign_next_available_uplink_cell(header->src, mr_mac_get_asn());
                 if (cell_id >= 0) {
                     // at the packet level, max_nodes is limited to 256 (using uint8_t cell_id)
-                    mr_queue_set_join_response(header->src, (uint8_t)cell_id, flag_attest);
+                    mr_queue_set_join_response(header->src, (uint8_t)cell_id);
                     // set the dirty flag that will trigger the event loop to compute the bloom filter
                     mr_bloom_gateway_set_dirty();
                     _mari_vars.app_event_callback(MARI_NODE_JOINED, (mr_event_data_t){ .data.node_info.node_id = header->src });
@@ -186,10 +182,6 @@ bool mr_handle_packet(uint8_t *packet, uint8_t length) {
                     return false;
                 }
 
-                // attestation: if packet has evidence, generates the verif_req; if not attesting, no change to the packet
-                if (!mr_attestation_send_verif_req(packet, &length)) {
-                    return false;
-                }
                 mr_event_data_t event_data = {
                     .data.new_packet = {
                         .len         = length,
@@ -242,12 +234,10 @@ bool mr_handle_packet(uint8_t *packet, uint8_t length) {
                 }
                 // the first byte after the header contains the cell_id
                 uint8_t cell_id = packet[sizeof(mr_packet_header_t)];
-                // the second byte after the header contains the flag_attest
-                uint8_t flag_attest = packet[sizeof(mr_packet_header_t) + 1];
-                // check for EDHOC msg3 after cell_id and flag_attest
-                if (length > sizeof(mr_packet_header_t) + 4) {
-                    uint8_t *jr_rest     = packet + sizeof(mr_packet_header_t) + 2;
-                    uint8_t  jr_rest_len = length - (uint8_t)sizeof(mr_packet_header_t) - 2;
+                // check for EDHOC msg3 after cell_id
+                if (length > sizeof(mr_packet_header_t) + 3) {
+                    uint8_t *jr_rest     = packet + sizeof(mr_packet_header_t) + 1;
+                    uint8_t  jr_rest_len = length - (uint8_t)sizeof(mr_packet_header_t) - 1;
                     if (jr_rest[0] == MARI_EDHOC_PAYLOAD_TAG) {
                         uint8_t edhoc_len = jr_rest[1];
                         if (edhoc_len > 0 && edhoc_len <= MARI_EDHOC_MAX_MSG_LEN &&
@@ -261,10 +251,6 @@ bool mr_handle_packet(uint8_t *packet, uint8_t length) {
                 }
                 if (mr_scheduler_node_assign_myself_to_cell(cell_id)) {
                     mr_assoc_node_handle_joined(header->src);
-                    if (flag_attest) {
-                        _attest_gateway_id  = header->src;
-                        _attest_evt_pending = true;
-                    }
                 } else {
                     _mari_vars.app_event_callback(MARI_ERROR, (mr_event_data_t){ 0 });
                 }
@@ -307,25 +293,10 @@ void mari_event_loop(void) {
     // process the event loop
     switch (mari_get_node_type()) {
         case MARI_GATEWAY:
-        {
-            // check attestation timeouts
-            uint64_t asn_now = mr_mac_get_asn();
-            mr_assoc_gateway_check_attestation_timeouts(asn_now);
-
             mr_bloom_gateway_event_loop();
             break;
-        }
         case MARI_NODE:
-            // break;
             {
-                if (_attest_evt_pending) {
-                    _attest_evt_pending = false;
-
-                    if (_mari_vars.app_event_callback) {
-                        mr_event_data_t ed = { .data.gateway_info.gateway_id = _attest_gateway_id };
-                        _mari_vars.app_event_callback(MARI_ATTESTATION, ed);
-                    }
-                }
                 break;
             }
     }

@@ -62,17 +62,8 @@ bool mr_assoc_gateway_node_is_joined(uint64_t node_id);
 bool mr_assoc_gateway_keep_node_alive(uint64_t node_id, uint64_t asn);
 void mr_assoc_gateway_clear_old_nodes(uint64_t asn);
 
-// for attestation
-// void mr_assoc_set_attesting(bool required);
-// bool mr_assoc_is_attesting(void);
-// void mr_assoc_set_attestation_ok(void);
-
-void mr_assoc_gateway_set_attesting(uint64_t node_id, bool v);
-bool mr_assoc_gateway_is_attesting(uint64_t node_id);
+// attestation: asn_dl per node (downlink ASN when join response was sent)
 void mr_assoc_gateway_set_attest_dl_asn(uint64_t node_id, uint64_t asn_dl);
 bool mr_assoc_gateway_get_attest_dl_asn(uint64_t node_id, uint64_t *asn_dl_out);
-
-bool mr_assoc_gateway_force_remove_node(uint64_t node_id, mr_event_tag_t reason);
-void mr_assoc_gateway_check_attestation_timeouts(uint64_t asn_now);
 
 #endif  // __ASSOCIATION_H

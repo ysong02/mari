@@ -424,18 +424,6 @@ void mr_assoc_gateway_clear_old_nodes(uint64_t asn) {
     }
 }
 
-void mr_assoc_gateway_set_attesting(uint64_t node_id, bool v) {
-    cell_t *c = mr_assoc_gateway_find_cell_by_node(node_id);
-    if (c) {
-        c->is_attesting = v;
-    }
-}
-
-bool mr_assoc_gateway_is_attesting(uint64_t node_id) {
-    cell_t *c = mr_assoc_gateway_find_cell_by_node(node_id);
-    return c ? c->is_attesting : false;
-}
-
 void mr_assoc_gateway_set_attest_dl_asn(uint64_t node_id, uint64_t asn_dl) {
     cell_t *c = mr_assoc_gateway_find_cell_by_node(node_id);
     if (c)
@@ -450,59 +438,6 @@ bool mr_assoc_gateway_get_attest_dl_asn(uint64_t node_id, uint64_t *out) {
     return true;
 }
 
-bool mr_assoc_gateway_force_remove_node(uint64_t node_id, mr_event_tag_t reason) {
-    // remove the node because of the bad attetation result
-    schedule_t *schedule = mr_scheduler_get_active_schedule_ptr();
-    for (size_t i = 0; i < schedule->n_cells; i++) {
-        if (schedule->cells[i].type != SLOT_TYPE_UPLINK) {
-            // we only care about uplink cells
-            continue;
-        }
-        cell_t *cell = &schedule->cells[i];
-        if (cell->assigned_node_id == node_id) {
-            // inform the scheduler
-            mr_scheduler_gateway_decrease_nodes_counter();
-            // clear the cell
-            cell->assigned_node_id  = NULL;
-            cell->last_received_asn = 0;
-            // inform the application
-            cell->is_attesting = false;
-
-            mr_event_data_t event_data = (mr_event_data_t){ .data.node_info.node_id = node_id, .tag = reason };
-            assoc_vars.mari_event_callback(MARI_NODE_LEFT, event_data);
-            return true;
-        }
-    }
-    return false;
-}
-
-void mr_assoc_gateway_check_attestation_timeouts(uint64_t asn_now) {
-    // How long we tolerate a node being in 'attesting' state:
-    uint64_t max_delta_asn =
-        (uint64_t)mr_scheduler_get_active_schedule_slot_count() * (uint64_t)MARI_ATTEST_TIMEOUT_SLOTFRAMES;
-
-    schedule_t *schedule = mr_scheduler_get_active_schedule_ptr();
-    for (size_t i = 0; i < schedule->n_cells; i++) {
-        cell_t *cell = &schedule->cells[i];
-
-        if (cell->type != SLOT_TYPE_UPLINK) {
-            continue;
-        }
-        if (cell->assigned_node_id == 0) {
-            continue;
-        }
-        if (!cell->is_attesting) {
-            continue;
-        }
-
-        // attestation started when we sent the join response
-        uint64_t asn_dl = cell->attest_asn_dl;
-
-        if (asn_now - asn_dl > max_delta_asn) {
-            mr_assoc_gateway_force_remove_node(cell->assigned_node_id, MARI_PEER_LOST_TIMEOUT);
-        }
-    }
-}
 // ------------ packet handlers -------
 
 void mr_assoc_handle_beacon(uint8_t *packet, uint8_t length, uint8_t channel, uint32_t ts) {

@@ -25,7 +25,7 @@
 
 #include "board.h"
 #include "C:/Users/yusong/Downloads/lakers/target/include/lakers.h"
-// #include "attestation.h"
+#include "attestation.h"
 
 //=========================== defines ==========================================
 
@@ -59,9 +59,10 @@ typedef struct {
 // Dedicated buffer for EDHOC msg3: fired from interrupt alongside MARI_CONNECTED,
 // so the single-slot event system would overwrite it before the main loop can read it.
 typedef struct {
-    bool    ready;
-    uint8_t data[MARI_EDHOC_MAX_MSG_LEN];
-    uint8_t len;
+    bool     ready;
+    uint8_t  data[MARI_EDHOC_MAX_MSG_LEN];
+    uint8_t  len;
+    uint64_t asn_dl;  ///< ASN recorded when join response (msg3) was received
 } edhoc_msg3_pending_t;
 
 typedef struct __attribute__((packed)) {
@@ -122,7 +123,7 @@ static EdhocMessageBuffer edhoc_message_2 = {0};
 static EdhocMessageBuffer edhoc_message_4 = {0};
 static EADItemC        ead_1_out       = {0};
 static EADItemC        ead_3_out       = {0};
-//static EADItemC        ead_4_out       = {0};
+static EADItemC        ead_4_out       = {0};
 static IdCred          id_cred_i_out   = {0};
 static uint8_t         edhoc_c_r       = 0;
 static uint8_t         edhoc_prk_out[32] = {0};
@@ -143,7 +144,8 @@ static void mari_event_callback(mr_event_t event, mr_event_data_t event_data) {
     if (event == MARI_EDHOC_MSG3) {
         // store in dedicated buffer: MARI_CONNECTED fires right after in the same call chain
         // and would overwrite the single-slot event before the main loop can read it
-        _edhoc_msg3_pend.len = event_data.data.edhoc.len;
+        _edhoc_msg3_pend.len    = event_data.data.edhoc.len;
+        _edhoc_msg3_pend.asn_dl = mr_mac_get_asn();  // record when join response (msg3) arrived
         memcpy(_edhoc_msg3_pend.data, event_data.data.edhoc.data, event_data.data.edhoc.len);
         _edhoc_msg3_pend.ready = true;
         return;
@@ -217,7 +219,14 @@ int main(void) {
                             msg3.len = m3_len;
                             if (responder_parse_message_3(&edhoc_responder, &msg3, &id_cred_i_out, &ead_3_out) != 0) { break; }
                             if (responder_verify_message_3(&edhoc_responder, &cred_i, &edhoc_prk_out) != 0) { break; }
-                            if (responder_prepare_message_4(&edhoc_responder, NULL, &edhoc_message_4) != 0) { break; }
+                            uint8_t evidence_cbor[MAX_EVIDENCE];
+                            uint8_t evidence_len = 0;
+                            mr_attestation_evidence_generation(mr_mac_get_asn(), edhoc_responder.processed_m3.prk_exporter, evidence_cbor, &evidence_len);
+                            ead_4_out.label       = 1;
+                            ead_4_out.is_critical = false;
+                            memcpy(ead_4_out.value.content, evidence_cbor, evidence_len);
+                            ead_4_out.value.len   = evidence_len;
+                            if (responder_prepare_message_4(&edhoc_responder, &ead_4_out, &edhoc_message_4) != 0) { break; }
                             node_vars.edhoc_msg4_ready = true;
                             node_vars.edhoc_completed  = true;
                         }
@@ -271,22 +280,9 @@ int main(void) {
                     // lock in this EDHOC session before appending msg2 to join request
                     node_vars.edhoc_started = true;
                     mr_queue_append_edhoc_to_join_request(edhoc_message_2.content, (uint8_t)edhoc_message_2.len);
-                    break;
-                }
-                case MARI_EDHOC_MSG3:
-                {
-                    // process msg3, verify, generate msg4
-                    EdhocMessageBuffer msg3 = {0};
-                    uint8_t            m3_len = event_data.data.edhoc.len;
-                    if (m3_len > MAX_MESSAGE_SIZE_LEN) { m3_len = MAX_MESSAGE_SIZE_LEN; }
-                    memcpy(msg3.content, event_data.data.edhoc.data, m3_len);
-                    msg3.len = m3_len;
-
-                    if (responder_parse_message_3(&edhoc_responder, &msg3, &id_cred_i_out, &ead_3_out) != 0) { break; }
-                    if (responder_verify_message_3(&edhoc_responder, &cred_i, &edhoc_prk_out) != 0) { break; }
-                    if (responder_prepare_message_4(&edhoc_responder, NULL, &edhoc_message_4) != 0) { break; }
-                    node_vars.edhoc_msg4_ready = true;
-                    node_vars.edhoc_completed  = true;
+                    // printf("[EDHOC] msg2 (%u B): ", (unsigned)edhoc_message_2.len);
+                    // for (size_t i = 0; i < edhoc_message_2.len; i++) { printf("%02x", edhoc_message_2.content[i]); }
+                    // printf("\n");
                     break;
                 }
                 default:
@@ -297,17 +293,27 @@ int main(void) {
         // drain pending EDHOC msg3 (stored separately to avoid being overwritten by MARI_CONNECTED)
         if (_edhoc_msg3_pend.ready) {
             _edhoc_msg3_pend.ready = false;
-            EdhocMessageBuffer msg3  = {0};
+            EdhocMessageBuffer msg3   = {0};
             uint8_t            m3_len = _edhoc_msg3_pend.len;
+            uint64_t           asn_dl = _edhoc_msg3_pend.asn_dl;
             if (m3_len > MAX_MESSAGE_SIZE_LEN) { m3_len = MAX_MESSAGE_SIZE_LEN; }
             memcpy(msg3.content, _edhoc_msg3_pend.data, m3_len);
             msg3.len = m3_len;
-            if (responder_parse_message_3(&edhoc_responder, &msg3, &id_cred_i_out, &ead_3_out) == 0 &&
-                responder_verify_message_3(&edhoc_responder, &cred_i, &edhoc_prk_out) == 0 &&
-                responder_prepare_message_4(&edhoc_responder, NULL, &edhoc_message_4) == 0) {
-                node_vars.edhoc_msg4_ready = true;
-                node_vars.edhoc_completed  = true;
+            if (responder_parse_message_3(&edhoc_responder, &msg3, &id_cred_i_out, &ead_3_out) != 0) { goto msg3_done; }
+            if (responder_verify_message_3(&edhoc_responder, &cred_i, &edhoc_prk_out) != 0) { goto msg3_done; }
+            {
+                uint8_t evidence_cbor[MAX_EVIDENCE];
+                uint8_t evidence_len = 0;
+                mr_attestation_evidence_generation(asn_dl, edhoc_responder.processed_m3.prk_exporter, evidence_cbor, &evidence_len);
+                ead_4_out.label       = 1;
+                ead_4_out.is_critical = false;
+                memcpy(ead_4_out.value.content, evidence_cbor, evidence_len);
+                ead_4_out.value.len   = evidence_len;
             }
+            if (responder_prepare_message_4(&edhoc_responder, &ead_4_out, &edhoc_message_4) != 0) { goto msg3_done; }
+            node_vars.edhoc_msg4_ready = true;
+            node_vars.edhoc_completed  = true;
+            msg3_done:;
         }
 
         if (node_vars.send_status_ready) {
@@ -320,7 +326,11 @@ int main(void) {
                 msg4_buf[pos++]   = (uint8_t)edhoc_message_4.len;
                 memcpy(msg4_buf + pos, edhoc_message_4.content, edhoc_message_4.len);
                 pos += (uint8_t)edhoc_message_4.len;
+                // printf("[EDHOC] msg4 (%u B): ", (unsigned)pos);
+                // for (uint8_t i = 0; i < pos; i++) { printf("%02x", msg4_buf[i]); }
+                // printf("\n");
                 mari_node_tx_payload(msg4_buf, pos);
+                board_set_led_mari(GREEN);  // evidence sent in EDHOC msg4
             } else {
                 mari_node_tx_payload((uint8_t *)status_packet_mock, sizeof(status_packet_mock));
             }
