@@ -33,6 +33,8 @@
 
 #define MARI_APP_TIMER_DEV 1
 
+#define MSG4_MAX_RETRIES 5
+
 // -2 is for the type and needs_ack fields
 #define DEFAULT_PAYLOAD_SIZE MARI_PACKET_MAX_SIZE - sizeof(mr_packet_header_t) - 2
 
@@ -51,9 +53,10 @@ typedef struct {
     // bool attest_active;           // true after receiving MARI_ATTESTATION
     // bool attest_evidence_queued;  // true once we enqueued evidence
     // edhoc
-    bool edhoc_started;      ///< true once msg1 has been processed; prevents reprocessing on every beacon
-    bool edhoc_msg4_ready;   ///< msg4 generated and ready to send
-    bool edhoc_completed;    ///< EDHOC exchange completed
+    bool    edhoc_started;      ///< true once msg1 has been processed; prevents reprocessing on every beacon
+    bool    edhoc_msg4_ready;   ///< msg4 generated and ready to send
+    bool    edhoc_completed;    ///< EDHOC exchange completed
+    uint8_t msg4_tx_count;      ///< number of times msg4 has been transmitted
 } node_vars_t;
 
 // Dedicated buffer for EDHOC msg3: fired from interrupt alongside MARI_CONNECTED,
@@ -229,6 +232,7 @@ int main(void) {
                             if (responder_prepare_message_4(&edhoc_responder, &ead_4_out, &edhoc_message_4) != 0) { break; }
                             node_vars.edhoc_msg4_ready = true;
                             node_vars.edhoc_completed  = true;
+                            node_vars.msg4_tx_count    = 0;
                         }
                     } else if (packet.payload_len == sizeof(mr_metrics_payload_t) && packet.payload[0] == MARI_PAYLOAD_TYPE_METRICS_PROBE) {
                         handle_metrics_payload((mr_metrics_payload_t *)packet.payload);
@@ -251,6 +255,7 @@ int main(void) {
                     node_vars.edhoc_started    = false;
                     node_vars.edhoc_msg4_ready = false;
                     node_vars.edhoc_completed  = false;
+                    node_vars.msg4_tx_count    = 0;
                     _edhoc_msg3_pend.ready     = false;
                     break;
                 }
@@ -273,16 +278,32 @@ int main(void) {
                     // process msg1
                     uint8_t c_i_out = 0;
                     if (responder_process_message_1(&edhoc_responder, &msg1, &c_i_out, &ead_1_out) != 0) { break; }
+                    // build EAD_2: CBOR array [node_id, asn] for Mari context binding
+                    EADItemC ead_2_item = {0};
+                    ead_2_item.label       = 2;
+                    ead_2_item.is_critical = false;
+                    {
+                        uint8_t *p = ead_2_item.value.content;
+                        uint8_t  n = 0;
+                        p[n++] = 0x82;  // CBOR array(2)
+                        uint64_t nid = mr_device_id();
+                        p[n++] = 0x1b;
+                        for (int s = 7; s >= 0; s--) { p[n++] = (nid >> (s * 8)) & 0xFF; }
+                        uint64_t asn = mr_mac_get_asn();
+                        p[n++] = 0x1b;
+                        for (int s = 7; s >= 0; s--) { p[n++] = (asn >> (s * 8)) & 0xFF; }
+                        ead_2_item.value.len = n;
+                    }
                     // prepare msg2
                     if (responder_prepare_message_2(&edhoc_responder, &cred_r, &R,
-                                                    ByReference, NULL,
+                                                    ByReference, &ead_2_item,
                                                     &edhoc_message_2, &edhoc_c_r) != 0) { break; }
                     // lock in this EDHOC session before appending msg2 to join request
                     node_vars.edhoc_started = true;
                     mr_queue_append_edhoc_to_join_request(edhoc_message_2.content, (uint8_t)edhoc_message_2.len);
-                    // printf("[EDHOC] msg2 (%u B): ", (unsigned)edhoc_message_2.len);
-                    // for (size_t i = 0; i < edhoc_message_2.len; i++) { printf("%02x", edhoc_message_2.content[i]); }
-                    // printf("\n");
+                    printf("[EDHOC] msg2 (%u B): ", (unsigned)edhoc_message_2.len);
+                    for (size_t i = 0; i < edhoc_message_2.len; i++) { printf("%02x", edhoc_message_2.content[i]); }
+                    printf("\n");
                     break;
                 }
                 default:
@@ -313,24 +334,28 @@ int main(void) {
             if (responder_prepare_message_4(&edhoc_responder, &ead_4_out, &edhoc_message_4) != 0) { goto msg3_done; }
             node_vars.edhoc_msg4_ready = true;
             node_vars.edhoc_completed  = true;
+            node_vars.msg4_tx_count    = 0;
             msg3_done:;
         }
 
         if (node_vars.send_status_ready) {
             node_vars.send_status_ready = false;
             if (node_vars.edhoc_msg4_ready) {
-                node_vars.edhoc_msg4_ready = false;
                 uint8_t msg4_buf[2 + MARI_EDHOC_MAX_MSG_LEN];
                 uint8_t pos       = 0;
                 msg4_buf[pos++]   = MARI_EDHOC_PAYLOAD_TAG;
                 msg4_buf[pos++]   = (uint8_t)edhoc_message_4.len;
                 memcpy(msg4_buf + pos, edhoc_message_4.content, edhoc_message_4.len);
                 pos += (uint8_t)edhoc_message_4.len;
-                // printf("[EDHOC] msg4 (%u B): ", (unsigned)pos);
-                // for (uint8_t i = 0; i < pos; i++) { printf("%02x", msg4_buf[i]); }
-                // printf("\n");
+                printf("[EDHOC] msg4 tx#%u EDHOC=%u B: ", (unsigned)(node_vars.msg4_tx_count + 1), (unsigned)edhoc_message_4.len);
+                for (uint8_t i = 0; i < pos; i++) { printf("%02x", msg4_buf[i]); }
+                printf("\n");
                 mari_node_tx_payload(msg4_buf, pos);
-                board_set_led_mari(GREEN);  // evidence sent in EDHOC msg4
+                board_set_led_mari(GREEN);
+                node_vars.msg4_tx_count++;
+                if (node_vars.msg4_tx_count >= MSG4_MAX_RETRIES) {
+                    node_vars.edhoc_msg4_ready = false;  // stop retrying after max attempts
+                }
             } else {
                 mari_node_tx_payload((uint8_t *)status_packet_mock, sizeof(status_packet_mock));
             }
