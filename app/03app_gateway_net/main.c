@@ -250,6 +250,16 @@ int main(void) {
             _app_vars.uart_to_radio_packet_ready = false;
             uint8_t packet_type                  = ipc_shared_data.uart_to_radio_tx[0];
 
+            // kick node requested by edge (attestation failure)
+            if (packet_type == MARI_EDGE_KICK_NODE) {
+                if (ipc_shared_data.uart_to_radio_len >= 1 + (uint8_t)sizeof(uint64_t)) {
+                    uint64_t node_id;
+                    memcpy(&node_id, (uint8_t *)ipc_shared_data.uart_to_radio_tx + 1, sizeof(uint64_t));
+                    mr_assoc_gateway_remove_node(node_id);
+                }
+                continue;
+            }
+
             // handle EDHOC messages from edge
             if (packet_type == MARI_EDGE_EDHOC) {
                 uint8_t         subtype   = ipc_shared_data.uart_to_radio_tx[1];

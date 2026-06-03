@@ -66,4 +66,7 @@ void mr_assoc_gateway_clear_old_nodes(uint64_t asn);
 void mr_assoc_gateway_set_attest_dl_asn(uint64_t node_id, uint64_t asn_dl);
 bool mr_assoc_gateway_get_attest_dl_asn(uint64_t node_id, uint64_t *asn_dl_out);
 
+// remove a node from the schedule (e.g., on attestation failure)
+void mr_assoc_gateway_remove_node(uint64_t node_id);
+
 #endif  // __ASSOCIATION_H

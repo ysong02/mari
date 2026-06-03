@@ -197,6 +197,7 @@ typedef enum {
     MARI_EDGE_KEEPALIVE    = 4,
     MARI_EDGE_GATEWAY_INFO = 5,
     MARI_EDGE_EDHOC        = 6,
+    MARI_EDGE_KICK_NODE    = 7,
 } mr_gateway_edge_type_t;
 
 typedef enum {

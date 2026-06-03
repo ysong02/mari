@@ -438,6 +438,21 @@ bool mr_assoc_gateway_get_attest_dl_asn(uint64_t node_id, uint64_t *out) {
     return true;
 }
 
+void mr_assoc_gateway_remove_node(uint64_t node_id) {
+    cell_t *c = mr_assoc_gateway_find_cell_by_node(node_id);
+    if (!c)
+        return;
+    mr_scheduler_gateway_decrease_nodes_counter();
+    c->assigned_node_id  = 0;
+    c->last_received_asn = 0;
+    c->attest_asn_dl     = 0;
+    mr_event_data_t event_data = {
+        .data.node_info.node_id = node_id,
+        .tag                    = MARI_ATTESTATION_FAILED
+    };
+    assoc_vars.mari_event_callback(MARI_NODE_LEFT, event_data);
+}
+
 // ------------ packet handlers -------
 
 void mr_assoc_handle_beacon(uint8_t *packet, uint8_t length, uint8_t channel, uint32_t ts) {

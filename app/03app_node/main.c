@@ -53,10 +53,11 @@ typedef struct {
     // bool attest_active;           // true after receiving MARI_ATTESTATION
     // bool attest_evidence_queued;  // true once we enqueued evidence
     // edhoc
-    bool    edhoc_started;      ///< true once msg1 has been processed; prevents reprocessing on every beacon
-    bool    edhoc_msg4_ready;   ///< msg4 generated and ready to send
-    bool    edhoc_completed;    ///< EDHOC exchange completed
-    uint8_t msg4_tx_count;      ///< number of times msg4 has been transmitted
+    bool     edhoc_started;      ///< true once msg1 has been processed; prevents reprocessing on every beacon
+    bool     edhoc_msg4_ready;   ///< msg4 generated and ready to send
+    bool     edhoc_completed;    ///< EDHOC exchange completed
+    uint8_t  msg4_tx_count;      ///< number of times msg4 has been transmitted
+    uint64_t conn_asn_dl;        ///< ASN recorded when join response was received (used as asn_dl for attestation)
 } node_vars_t;
 
 // Dedicated buffer for EDHOC msg3: fired from interrupt alongside MARI_CONNECTED,
@@ -183,8 +184,8 @@ int main(void) {
     board_init();
     board_set_led_mari(BLUE);
 
-    credential_new(&cred_r, CRED_R_BYTES, sizeof(CRED_R_BYTES));
-    credential_new(&cred_i, CRED_I_BYTES, sizeof(CRED_I_BYTES));
+    if (credential_new(&cred_r, CRED_R_BYTES, sizeof(CRED_R_BYTES)) != 0) { while (1); }
+    if (credential_new(&cred_i, CRED_I_BYTES, sizeof(CRED_I_BYTES)) != 0) { while (1); }
 
     mari_init(MARI_NODE, 0xa3, schedule_app, &mari_event_callback);
 
@@ -224,7 +225,7 @@ int main(void) {
                             if (responder_verify_message_3(&edhoc_responder, &cred_i, &edhoc_prk_out) != 0) { break; }
                             uint8_t evidence_cbor[MAX_EVIDENCE];
                             uint8_t evidence_len = 0;
-                            mr_attestation_evidence_generation(mr_mac_get_asn(), edhoc_responder.processed_m3.prk_exporter, evidence_cbor, &evidence_len);
+                            mr_attestation_evidence_generation(node_vars.conn_asn_dl, edhoc_responder.processed_m3.prk_exporter, evidence_cbor, &evidence_len);
                             ead_4_out.label       = 1;
                             ead_4_out.is_critical = false;
                             memcpy(ead_4_out.value.content, evidence_cbor, evidence_len);
@@ -247,6 +248,7 @@ int main(void) {
                     uint64_t gateway_id = event_data.data.gateway_info.gateway_id;
                     board_set_led_mari_gateway(gateway_id);
                     board_set_led_mari(YELLOW);
+                    node_vars.conn_asn_dl = mr_mac_get_asn();
                     break;
                 }
                 case MARI_DISCONNECTED:
@@ -256,6 +258,7 @@ int main(void) {
                     node_vars.edhoc_msg4_ready = false;
                     node_vars.edhoc_completed  = false;
                     node_vars.msg4_tx_count    = 0;
+                    node_vars.conn_asn_dl      = 0;
                     _edhoc_msg3_pend.ready     = false;
                     break;
                 }
