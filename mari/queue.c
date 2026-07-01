@@ -154,7 +154,7 @@ uint8_t mr_queue_next_packet(slot_type_t slot_type, uint8_t *packet) {
         }
     } else if (mari_get_node_type() == MARI_NODE) {
         if (slot_type == SLOT_TYPE_SHARED_UPLINK) {
-            if (mr_assoc_node_ready_to_join()) {
+            if (mr_assoc_node_ready_to_join() && pending_msg2_len > 0) {
                 mr_assoc_node_start_joining();
                 len = mr_queue_get_join_packet(packet);
             }

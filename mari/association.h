@@ -69,4 +69,7 @@ bool mr_assoc_gateway_get_attest_dl_asn(uint64_t node_id, uint64_t *asn_dl_out);
 // remove a node from the schedule (e.g., on attestation failure)
 void mr_assoc_gateway_remove_node(uint64_t node_id);
 
+// remove all nodes from the schedule and clear the bloom filter (used for coordinated reboot)
+void mr_assoc_gateway_remove_all_nodes(void);
+
 #endif  // __ASSOCIATION_H

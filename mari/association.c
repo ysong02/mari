@@ -453,6 +453,19 @@ void mr_assoc_gateway_remove_node(uint64_t node_id) {
     assoc_vars.mari_event_callback(MARI_NODE_LEFT, event_data);
 }
 
+void mr_assoc_gateway_remove_all_nodes(void) {
+    schedule_t *s = mr_scheduler_get_active_schedule_ptr();
+    for (size_t i = 0; i < s->n_cells; i++) {
+        cell_t *c = &s->cells[i];
+        if (c->type == SLOT_TYPE_UPLINK && c->assigned_node_id != 0) {
+            mr_scheduler_gateway_decrease_nodes_counter();
+            c->assigned_node_id  = 0;
+            c->last_received_asn = 0;
+            c->attest_asn_dl     = 0;
+        }
+    }
+}
+
 // ------------ packet handlers -------
 
 void mr_assoc_handle_beacon(uint8_t *packet, uint8_t length, uint8_t channel, uint32_t ts) {

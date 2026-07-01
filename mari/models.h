@@ -38,8 +38,9 @@
 
 #define MARI_STATS_SCHED_USAGE_SIZE 4  // supports schedules with up to 256 cells
 
-#define MARI_EDHOC_PAYLOAD_TAG 0xED
-#define MARI_EDHOC_MAX_MSG_LEN 150
+#define MARI_EDHOC_PAYLOAD_TAG  0xED
+#define MARI_REBOOT_PAYLOAD_TAG 0x52
+#define MARI_EDHOC_MAX_MSG_LEN  150
 
 //=========================== types ============================================
 
@@ -198,6 +199,7 @@ typedef enum {
     MARI_EDGE_GATEWAY_INFO = 5,
     MARI_EDGE_EDHOC        = 6,
     MARI_EDGE_KICK_NODE    = 7,
+    MARI_EDGE_REBOOT_ALL   = 9,
 } mr_gateway_edge_type_t;
 
 typedef enum {

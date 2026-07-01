@@ -16,6 +16,7 @@
 #include "mr_gpio.h"
 #include "mr_device.h"
 #include "mr_radio.h"
+#include "mr_rng.h"
 #include "mr_timer_hf.h"
 #include "mari.h"
 #include "packet.h"
@@ -34,6 +35,7 @@
 #define MARI_APP_TIMER_DEV 1
 
 #define MSG4_MAX_RETRIES 5
+#define MSG3_TIMEOUT_SLOTS 600  ///< ~6s: reset and retry join if msg3 never arrives after connecting
 
 // -2 is for the type and needs_ack fields
 #define DEFAULT_PAYLOAD_SIZE MARI_PACKET_MAX_SIZE - sizeof(mr_packet_header_t) - 2
@@ -187,6 +189,16 @@ int main(void) {
     if (credential_new(&cred_r, CRED_R_BYTES, sizeof(CRED_R_BYTES)) != 0) { while (1); }
     if (credential_new(&cred_i, CRED_I_BYTES, sizeof(CRED_I_BYTES)) != 0) { while (1); }
 
+    // Random delay before joining to spread the join storm across rounds.
+    // nRF52840 @ 64 MHz: inner loop ~1 cycle per NOP → ~128000 cycles ≈ 2ms per unit.
+    // rand_val in [0,255] gives 0–510ms spread.
+    mr_rng_init();
+    uint8_t rand_val = 0;
+    mr_rng_read_u8(&rand_val);
+    for (uint32_t unit = 0; unit < (uint32_t)rand_val; unit++) {
+        for (volatile uint32_t i = 0; i < 64000; i++) { __NOP(); }
+    }
+
     mari_init(MARI_NODE, 0xa3, schedule_app, &mari_event_callback);
 
     // blink blue every 100ms
@@ -213,7 +225,10 @@ int main(void) {
                 {
                     mari_packet_t packet = event_data.data.new_packet;
 
-                    if (packet.payload_len >= 2 && packet.payload[0] == MARI_EDHOC_PAYLOAD_TAG) {
+                    if (packet.payload_len >= 1 && packet.payload[0] == MARI_REBOOT_PAYLOAD_TAG) {
+                        NVIC_SystemReset();
+                        break;
+                    } else if (packet.payload_len >= 2 && packet.payload[0] == MARI_EDHOC_PAYLOAD_TAG) {
                         // EDHOC msg3 delivered as downlink data packet
                         uint8_t m3_len = packet.payload[1];
                         if (m3_len > 0 && m3_len <= MAX_MESSAGE_SIZE_LEN &&
@@ -343,6 +358,15 @@ int main(void) {
 
         if (node_vars.send_status_ready) {
             node_vars.send_status_ready = false;
+
+            // Stuck yellow: connected but msg3 never arrived → reset and retry
+            if (mari_node_is_connected() && node_vars.edhoc_started && !node_vars.edhoc_completed) {
+                if (node_vars.conn_asn_dl > 0 &&
+                    (mr_mac_get_asn() - node_vars.conn_asn_dl) > MSG3_TIMEOUT_SLOTS) {
+                    NVIC_SystemReset();
+                }
+            }
+
             if (node_vars.edhoc_msg4_ready) {
                 uint8_t msg4_buf[2 + MARI_EDHOC_MAX_MSG_LEN];
                 uint8_t pos       = 0;

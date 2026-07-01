@@ -73,6 +73,10 @@ schedule_t       *schedule_app = &schedule_huge;
 
 volatile __attribute__((section(".shared_data"))) ipc_shared_data_t ipc_shared_data;
 
+// Staging buffer: build IPC payloads here before calling _ipc_send_to_app().
+// Avoids writing directly to shared memory while the APP core may still be reading it.
+static uint8_t _ipc_tx_buf[UINT8_MAX];
+
 static void _mari_event_callback(mr_event_t event, mr_event_data_t event_data) {
     if (event == MARI_EDHOC_MSG2) {
         // store in dedicated buffer: MARI_NODE_JOINED fires right after in the same interrupt
@@ -92,15 +96,22 @@ static void _to_uart_gateway_loop(void) {
     _app_vars.to_uart_gateway_loop_ready = true;
 }
 
-//static uint16_t _net_id(void) {
-//    const mari_app_config_t *cfg = (const mari_app_config_t *)MARI_APP_NET_CONFIG_START_ADDRESS;
-
-//    if (cfg->magic != MARI_APP_CONFIG_MAGIC_VALUE || cfg->has_net_id != 1) {
-//        // No network config found, use default network ID
-//        return MARI_NET_ID_DEFAULT;
-//    }
-//    return (uint16_t)(cfg->net_id & 0xFFFFu);
-//}
+// Send a buffer to the APP core via IPC.
+// Waits until the APP core has consumed the previous message (radio_to_uart_free == true)
+// before overwriting the shared buffer. This prevents IPC race conditions where a second
+// write clobbers data before the APP core's interrupt handler finishes copying it.
+static void _ipc_send_to_app(const uint8_t *data, uint8_t len) {
+    // Spin-wait for APP core to mark buffer free (~2µs typical; hard timeout prevents lockup).
+    uint32_t timeout = 200000;
+    while (!ipc_shared_data.radio_to_uart_free && timeout--) {
+        __NOP();
+    }
+    ipc_shared_data.radio_to_uart_free = false;
+    memcpy((void *)ipc_shared_data.radio_to_uart, data, len);
+    ipc_shared_data.radio_to_uart_len = len;
+    __DSB();  // ensure writes are visible before the IPC signal fires
+    NRF_IPC_NS->TASKS_SEND[IPC_CHAN_RADIO_TO_UART] = 1;
+}
 
 static void _init_ipc(void) {
     NRF_IPC_NS->INTENSET                            = (1 << IPC_CHAN_UART_TO_RADIO);
@@ -135,8 +146,9 @@ int main(void) {
             mr_event_t      event      = _app_vars.mari_event;
             mr_event_data_t event_data = _app_vars.mari_event_data;
 
-            // uint32_t now_ts_s     = mr_timer_hf_now(MARI_APP_TIMER_DEV) / 1000 / 1000;
-            bool send_to_uart = false;
+            bool    send_to_uart = false;
+            uint8_t send_len     = 0;
+
             switch (event) {
                 case MARI_NEW_PACKET:
                 {
@@ -150,71 +162,69 @@ int main(void) {
                         event_data.data.new_packet.payload[0] == MARI_EDHOC_PAYLOAD_TAG) {
                         uint8_t edhoc_len = event_data.data.new_packet.payload[1];
                         if (edhoc_len > 0 && (uint8_t)(2 + edhoc_len) <= event_data.data.new_packet.payload_len) {
-                            uint8_t  *buf = (uint8_t *)ipc_shared_data.radio_to_uart;
                             uint64_t  src    = event_data.data.new_packet.header->src;
                             uint64_t  asn_dl = 0;
                             mr_assoc_gateway_get_attest_dl_asn(src, &asn_dl);
                             uint64_t  asn_ul = mr_mac_get_asn();
-                            uint8_t   pos = 0;
-                            buf[pos++]    = MARI_EDGE_EDHOC;
-                            buf[pos++]    = MARI_EDHOC_SUBTYPE_MSG4;
-                            memcpy(buf + pos, &src, sizeof(uint64_t));
+                            uint8_t   pos    = 0;
+                            _ipc_tx_buf[pos++] = MARI_EDGE_EDHOC;
+                            _ipc_tx_buf[pos++] = MARI_EDHOC_SUBTYPE_MSG4;
+                            memcpy(_ipc_tx_buf + pos, &src, sizeof(uint64_t));
                             pos += sizeof(uint64_t);
-                            memcpy(buf + pos, &asn_dl, sizeof(uint64_t));
+                            memcpy(_ipc_tx_buf + pos, &asn_dl, sizeof(uint64_t));
                             pos += sizeof(uint64_t);
-                            memcpy(buf + pos, &asn_ul, sizeof(uint64_t));
+                            memcpy(_ipc_tx_buf + pos, &asn_ul, sizeof(uint64_t));
                             pos += sizeof(uint64_t);
-                            memcpy(buf + pos, event_data.data.new_packet.payload + 2, edhoc_len);
+                            memcpy(_ipc_tx_buf + pos, event_data.data.new_packet.payload + 2, edhoc_len);
                             pos += edhoc_len;
-                            ipc_shared_data.radio_to_uart_len = pos;
-                            send_to_uart                      = true;
+                            send_to_uart = true;
+                            send_len     = pos;
                         }
                         break;  // don't forward as regular data
                     }
 
-                    ipc_shared_data.radio_to_uart_len = event_data.data.new_packet.len + 1;
-                    ipc_shared_data.radio_to_uart[0]  = MARI_EDGE_DATA;
-                    memcpy((void *)ipc_shared_data.radio_to_uart + 1, event_data.data.new_packet.header, event_data.data.new_packet.len);
+                    send_len            = event_data.data.new_packet.len + 1;
+                    _ipc_tx_buf[0]      = MARI_EDGE_DATA;
+                    memcpy(_ipc_tx_buf + 1, event_data.data.new_packet.header, event_data.data.new_packet.len);
                     send_to_uart = true;
                     break;
                 }
                 case MARI_KEEPALIVE:
-                    ipc_shared_data.radio_to_uart_len = 1 + sizeof(uint64_t);
-                    ipc_shared_data.radio_to_uart[0]  = MARI_EDGE_KEEPALIVE;
-                    memcpy((void *)ipc_shared_data.radio_to_uart + 1, &event_data.data.node_info.node_id, sizeof(uint64_t));
+                    send_len       = 1 + sizeof(uint64_t);
+                    _ipc_tx_buf[0] = MARI_EDGE_KEEPALIVE;
+                    memcpy(_ipc_tx_buf + 1, &event_data.data.node_info.node_id, sizeof(uint64_t));
                     send_to_uart = true;
                     break;
                 case MARI_NODE_JOINED:
                     // printf("%d New node joined: %016llX  (%d nodes connected)\n", now_ts_s, event_data.data.node_info.node_id, mari_gateway_count_nodes());
                     metrics_add_node(event_data.data.node_info.node_id);
-                    ipc_shared_data.radio_to_uart_len = 1 + sizeof(uint64_t);
-                    ipc_shared_data.radio_to_uart[0]  = MARI_EDGE_NODE_JOINED;
-                    memcpy((void *)ipc_shared_data.radio_to_uart + 1, &event_data.data.node_info.node_id, sizeof(uint64_t));
+                    send_len       = 1 + sizeof(uint64_t);
+                    _ipc_tx_buf[0] = MARI_EDGE_NODE_JOINED;
+                    memcpy(_ipc_tx_buf + 1, &event_data.data.node_info.node_id, sizeof(uint64_t));
                     send_to_uart = true;
                     break;
                 case MARI_NODE_LEFT:
                     // printf("%d Node left: %016llX, reason: %u  (%d nodes connected)\n", now_ts_s, event_data.data.node_info.node_id, event_data.tag, mari_gateway_count_nodes());
                     metrics_clear_node(event_data.data.node_info.node_id);
-                    ipc_shared_data.radio_to_uart_len = 1 + sizeof(uint64_t);
-                    ipc_shared_data.radio_to_uart[0]  = MARI_EDGE_NODE_LEFT;
-                    memcpy((void *)ipc_shared_data.radio_to_uart + 1, &event_data.data.node_info.node_id, sizeof(uint64_t));
+                    send_len       = 1 + sizeof(uint64_t);
+                    _ipc_tx_buf[0] = MARI_EDGE_NODE_LEFT;
+                    memcpy(_ipc_tx_buf + 1, &event_data.data.node_info.node_id, sizeof(uint64_t));
                     send_to_uart = true;
                     break;
                 case MARI_EDHOC_MSG2:
                 {
                     // forward EDHOC msg2 to edge: [EDHOC=6][MSG2=2][node_id: 8 bytes][data...]
-                    uint8_t  *buf    = (uint8_t *)ipc_shared_data.radio_to_uart;
-                    uint64_t  src    = event_data.data.edhoc.node_id;
-                    uint8_t   elen   = event_data.data.edhoc.len;
-                    uint8_t   pos    = 0;
-                    buf[pos++]       = MARI_EDGE_EDHOC;
-                    buf[pos++]       = MARI_EDHOC_SUBTYPE_MSG2;
-                    memcpy(buf + pos, &src, sizeof(uint64_t));
+                    uint64_t  src  = event_data.data.edhoc.node_id;
+                    uint8_t   elen = event_data.data.edhoc.len;
+                    uint8_t   pos  = 0;
+                    _ipc_tx_buf[pos++] = MARI_EDGE_EDHOC;
+                    _ipc_tx_buf[pos++] = MARI_EDHOC_SUBTYPE_MSG2;
+                    memcpy(_ipc_tx_buf + pos, &src, sizeof(uint64_t));
                     pos += sizeof(uint64_t);
-                    memcpy(buf + pos, event_data.data.edhoc.data, elen);
+                    memcpy(_ipc_tx_buf + pos, event_data.data.edhoc.data, elen);
                     pos += elen;
-                    ipc_shared_data.radio_to_uart_len = pos;
-                    send_to_uart                      = true;
+                    send_to_uart = true;
+                    send_len     = pos;
                     break;
                 }
                 case MARI_ERROR:
@@ -225,30 +235,44 @@ int main(void) {
             }
 
             if (send_to_uart) {
-                NRF_IPC_NS->TASKS_SEND[IPC_CHAN_RADIO_TO_UART] = 1;
+                _ipc_send_to_app(_ipc_tx_buf, send_len);
             }
         }
 
         // drain pending EDHOC msg2 (stored separately to avoid being overwritten by MARI_NODE_JOINED)
         if (_edhoc_msg2_pend.ready) {
             _edhoc_msg2_pend.ready = false;
-            uint8_t  *buf  = (uint8_t *)ipc_shared_data.radio_to_uart;
             uint64_t  src  = _edhoc_msg2_pend.node_id;
             uint8_t   elen = _edhoc_msg2_pend.len;
             uint8_t   pos  = 0;
-            buf[pos++]     = MARI_EDGE_EDHOC;
-            buf[pos++]     = MARI_EDHOC_SUBTYPE_MSG2;
-            memcpy(buf + pos, &src, sizeof(uint64_t));
+            _ipc_tx_buf[pos++] = MARI_EDGE_EDHOC;
+            _ipc_tx_buf[pos++] = MARI_EDHOC_SUBTYPE_MSG2;
+            memcpy(_ipc_tx_buf + pos, &src, sizeof(uint64_t));
             pos += sizeof(uint64_t);
-            memcpy(buf + pos, _edhoc_msg2_pend.data, elen);
+            memcpy(_ipc_tx_buf + pos, _edhoc_msg2_pend.data, elen);
             pos += elen;
-            ipc_shared_data.radio_to_uart_len = pos;
-            NRF_IPC_NS->TASKS_SEND[IPC_CHAN_RADIO_TO_UART] = 1;
+            _ipc_send_to_app(_ipc_tx_buf, pos);
         }
 
         if (_app_vars.uart_to_radio_packet_ready) {
             _app_vars.uart_to_radio_packet_ready = false;
             uint8_t packet_type                  = ipc_shared_data.uart_to_radio_tx[0];
+
+            // broadcast reboot to all nodes and clear association table
+            if (packet_type == MARI_EDGE_REBOOT_ALL) {
+                uint8_t reboot_buf[sizeof(mr_packet_header_t) + 1];
+                memset(reboot_buf, 0, sizeof(reboot_buf));
+                mr_packet_header_t *hdr = (mr_packet_header_t *)reboot_buf;
+                hdr->version    = 2;
+                hdr->type       = MARI_PACKET_DATA;
+                hdr->network_id = mr_assoc_get_network_id();
+                hdr->dst        = MARI_BROADCAST_ADDRESS;
+                hdr->src        = mr_device_id();
+                reboot_buf[sizeof(mr_packet_header_t)] = MARI_REBOOT_PAYLOAD_TAG;
+                mari_tx(reboot_buf, sizeof(reboot_buf));
+                mr_assoc_gateway_remove_all_nodes();
+                continue;
+            }
 
             // kick node requested by edge (attestation failure)
             if (packet_type == MARI_EDGE_KICK_NODE) {
@@ -304,11 +328,10 @@ int main(void) {
         }
 
         if (_app_vars.to_uart_gateway_loop_ready) {
-            _app_vars.to_uart_gateway_loop_ready           = false;
-            ipc_shared_data.radio_to_uart[0]               = MARI_EDGE_GATEWAY_INFO;
-            size_t len                                     = mr_build_uart_packet_gateway_info((uint8_t *)(ipc_shared_data.radio_to_uart + 1));
-            ipc_shared_data.radio_to_uart_len              = 1 + len;
-            NRF_IPC_NS->TASKS_SEND[IPC_CHAN_RADIO_TO_UART] = 1;
+            _app_vars.to_uart_gateway_loop_ready = false;
+            _ipc_tx_buf[0] = MARI_EDGE_GATEWAY_INFO;
+            size_t len     = mr_build_uart_packet_gateway_info(_ipc_tx_buf + 1);
+            _ipc_send_to_app(_ipc_tx_buf, 1 + len);
         }
 
         // best to keep this at the end of the main loop

@@ -168,6 +168,9 @@ int main(void) {
     _init_ipc();
     mr_uart_init(MR_UART_INDEX, &_mr_uart_rx_pin, &_mr_uart_tx_pin, MR_UART_BAUDRATE, &_uart_callback);
 
+    // Mark IPC buffer as free before releasing the NET core so it can start sending immediately
+    ipc_shared_data.radio_to_uart_free = true;
+
     _release_network_core();
     // this is a bit hacky -- sometimes it does not work without this
     NRF_RESET_S->NETWORK.FORCEOFF = 0;
@@ -224,9 +227,9 @@ void IPC_IRQHandler(void) {
     if (NRF_IPC_S->EVENTS_RECEIVE[IPC_CHAN_RADIO_TO_UART]) {
         NRF_IPC_S->EVENTS_RECEIVE[IPC_CHAN_RADIO_TO_UART] = 0;
 
-        // Enqueue the frame instead of just setting a flag
-        if (!_tx_queue_enqueue((const uint8_t *)ipc_shared_data.radio_to_uart, ipc_shared_data.radio_to_uart_len)) {
-            // Queue full - could add error handling/statistics here
-        }
+        // Copy out the data into the TX queue, then immediately free the shared buffer
+        // so the NET core can write the next message without waiting.
+        _tx_queue_enqueue((const uint8_t *)ipc_shared_data.radio_to_uart, ipc_shared_data.radio_to_uart_len);
+        ipc_shared_data.radio_to_uart_free = true;
     }
 }
