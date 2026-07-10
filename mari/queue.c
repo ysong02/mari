@@ -28,13 +28,10 @@
 
 //=========================== defines ==========================================
 
-// Independent of MARI_JOIN_RESPONSE_QUEUE_SIZE so both can be tuned separately.
 #define EDHOC_MSG3_ENTRIES       32
 #define PENDING_JOINRESP_SIZE    32
 
-// How many slots to wait for msg3 before sending join response without it (fallback).
-// The UART roundtrip (edge processes msg2, returns msg3) is ~10-30 ms; 30 slots ~300 ms is ample.
-#define JOINRESP_WAIT_TIMEOUT_SLOTS 30
+#define JOINRESP_WAIT_TIMEOUT_SLOTS 300  
 
 typedef struct {
     uint64_t node_id;
@@ -374,6 +371,16 @@ void mr_queue_set_edhoc_msg3(uint64_t node_id, uint8_t *data, uint8_t len) {
             pending_joinresp_pool[pi].valid = false;
             break;
         }
+    }
+}
+
+void mr_queue_gateway_reset_edhoc_state(void) {
+    for (uint8_t i = 0; i < EDHOC_MSG3_ENTRIES; i++) {
+        edhoc_msg3_entries[i].node_id = 0;
+        edhoc_msg3_entries[i].len     = 0;
+    }
+    for (uint8_t i = 0; i < PENDING_JOINRESP_SIZE; i++) {
+        pending_joinresp_pool[i].valid = false;
     }
 }
 

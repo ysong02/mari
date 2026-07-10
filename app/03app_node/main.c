@@ -1,13 +1,28 @@
 /**
  * @file
  * @ingroup     app
+ * @brief       Related-work Node — EDHOC Initiator + Attestation over Mari
  *
- * @brief       Mari Node application example
+ * Role reversal from the swarm design (this repo's mari/app/03app_node when built
+ * from the measurement-edhoc-mari-attestation branch):
+ *   - Node = EDHOC Initiator (sends msg1 in join request, msg3 in uplink)
+ *   - Edge = EDHOC Responder (sends msg2 in join response)
+ *
+ * EDHOC flow:
+ *   1. Startup/disconnect: generate msg1 with EAD_1=[258], append to join request.
+ *   2. Join response (MARI_EDHOC_MSG3 event): contains msg2 from edge.
+ *   3. Main loop drains pending msg2: parse, verify, extract nonce from EAD_2,
+ *      compute COSE_Sign1 token with attestation binder, prepare msg3 with EAD_3.
+ *   4. Send msg3 on the next uplink slot, retransmitting (bounded by MSG3_MAX_RETRIES)
+ *      until the edge acks it (MAURA_MSG3_ACK_TAG) or the retry budget is exhausted,
+ *      in which case reboot to rejoin from scratch.
  *
  * @author Geovane Fedrecheski <geovane.fedrecheski@inria.fr>
- *
- * @copyright Inria, 2025
+ * @author Alexandre Abadie <alexandre.abadie@inria.fr>
+ * @author Yuxuan Song <yuxuan.song@inria.fr>
+ * @copyright Inria, 2026
  */
+
 #include <nrf.h>
 #include <stdio.h>
 #include <stdbool.h>
@@ -28,17 +43,17 @@
 #include "C:/Users/yusong/Downloads/lakers/target/include/lakers.h"
 #include "attestation.h"
 
-//=========================== defines ==========================================
+//=========================== defines =========================================
 
-#define MARI_APP_NET_ID MARI_NET_ID_DEFAULT
+#define MAURA_APP_NET_ID      MARI_NET_ID_DEFAULT
+#define MAURA_APP_TIMER_DEV   1
 
-#define MARI_APP_TIMER_DEV 1
+#define MSG2_TIMEOUT_SLOTS    600  
+#define MAURA_MSG3_ACK_TAG    0xAC
+#define MSG3_MAX_RETRIES      10
 
-#define MSG4_MAX_RETRIES 5
-#define MSG3_TIMEOUT_SLOTS 600  ///< ~6s: reset and retry join if msg3 never arrives after connecting
-
-// -2 is for the type and needs_ack fields
-#define DEFAULT_PAYLOAD_SIZE MARI_PACKET_MAX_SIZE - sizeof(mr_packet_header_t) - 2
+#define DEFAULT_PAYLOAD_SIZE (MARI_PACKET_MAX_SIZE - (uint8_t)sizeof(mr_packet_header_t) - 2u)
+#define MAURA_MSG_BUF_LEN    220u  // generous buffer for msg3 with EAD_3
 
 typedef struct __attribute__((packed)) {
     uint8_t type;
@@ -49,27 +64,25 @@ typedef struct {
     mr_event_t      event;
     mr_event_data_t event_data;
     bool            event_ready;
-    bool            led_blink_state;  // for blinking when not connected
+    bool            led_blink_state;
     bool            send_status_ready;
 
-    // bool attest_active;           // true after receiving MARI_ATTESTATION
-    // bool attest_evidence_queued;  // true once we enqueued evidence
-    // edhoc
-    bool     edhoc_started;      ///< true once msg1 has been processed; prevents reprocessing on every beacon
-    bool     edhoc_msg4_ready;   ///< msg4 generated and ready to send
-    bool     edhoc_completed;    ///< EDHOC exchange completed
-    uint8_t  msg4_tx_count;      ///< number of times msg4 has been transmitted
-    uint64_t conn_asn_dl;        ///< ASN recorded when join response was received (used as asn_dl for attestation)
+    bool     edhoc_started;    ///< msg1 generated and appended to join request
+    bool     edhoc_msg3_ready; ///< msg3 with EAD_3 ready to transmit
+    bool     edhoc_completed;  ///< EDHOC exchange done
+    bool     msg3_acked;       ///< edge confirmed msg3 receipt -- stop retransmitting
+    uint8_t  msg3_tx_count;    ///< number of times msg3 has been transmitted (capped by MSG3_MAX_RETRIES)
+    uint64_t conn_asn_dl;      ///< ASN when join response arrived
 } node_vars_t;
 
-// Dedicated buffer for EDHOC msg3: fired from interrupt alongside MARI_CONNECTED,
-// so the single-slot event system would overwrite it before the main loop can read it.
+// Dedicated buffer for pending msg2 from join response.
+// MARI_EDHOC_MSG3 fires in interrupt context alongside MARI_CONNECTED — storing
+// separately prevents the single-slot event from being overwritten before main loop reads it.
 typedef struct {
-    bool     ready;
-    uint8_t  data[MARI_EDHOC_MAX_MSG_LEN];
-    uint8_t  len;
-    uint64_t asn_dl;  ///< ASN recorded when join response (msg3) was received
-} edhoc_msg3_pending_t;
+    bool    ready;
+    uint8_t data[MARI_EDHOC_MAX_MSG_LEN];
+    uint8_t len;
+} msg2_pending_t;
 
 typedef struct __attribute__((packed)) {
     uint64_t marilib_timestamp;
@@ -77,39 +90,31 @@ typedef struct __attribute__((packed)) {
     uint32_t tx_counter;
 } node_stats_t;
 
-//=========================== variables ========================================
+//=========================== variables =======================================
 
-node_vars_t          node_vars         = { 0 };
-node_stats_t         node_stats        = { 0 };
-edhoc_msg3_pending_t _edhoc_msg3_pend  = { 0 };
+static node_vars_t   _node_vars   = {0};
+static node_stats_t  _node_stats  = {0};
+static msg2_pending_t _msg2_pend  = {0};
 
 extern schedule_t schedule_minuscule, schedule_tiny, schedule_huge;
-schedule_t       *schedule_app = &schedule_huge;
+static schedule_t *schedule_app = &schedule_huge;
 
-// example status packet, to use as periodic uplink packet
-uint8_t status_packet_mock[4] = {
+static uint8_t _status_pkt[4] = {
     0x80,  // swarmit notification status
     1,     // SWRMT_DEVICE_TYPE_DOTBOTV3
     1,     // SWRMT_APPLICATION_RUNNING
     80,    // battery level
 };
 
-// EDHOC credentials (Responder = node, Initiator = edge/mari_edge)
-// R = Responder's static private DH key
-static const BytesP256ElemLen R = {
-    0x72, 0xcc, 0x47, 0x61, 0xdb, 0xd4, 0xc7, 0x8f, 0x75, 0x89, 0x31, 0xaa, 0x58, 0x9d, 0x34, 0x8d,
-    0x1e, 0xf8, 0x74, 0xa7, 0xe3, 0x03, 0xed, 0xe2, 0xf1, 0x40, 0xdc, 0xf3, 0xe6, 0xaa, 0x4a, 0xac
+// Node = EDHOC Initiator.
+// Reuse the same credential pair as the swarm mari_edge.py initiator so the
+// edge (now responder) can authenticate the node with its known CRED_I.
+static const BytesP256ElemLen I = {
+    0x1f, 0x7e, 0x4a, 0xe4, 0x29, 0x3a, 0x34, 0x8b, 0xf2, 0xb1, 0x36, 0x5c, 0xe0, 0x98, 0xaa, 0x49,
+    0xc2, 0x07, 0xbd, 0x1b, 0xa7, 0xdd, 0xde, 0xcd, 0xfa, 0xd6, 0x0c, 0xad, 0xe8, 0x2e, 0x9e, 0xf5
 };
-// CRED_R = Responder's credential (CCS with public key corresponding to R)
-static const uint8_t CRED_R_BYTES[95] = {
-    0xa2, 0x02, 0x6b, 0x65, 0x78, 0x61, 0x6d, 0x70, 0x6c, 0x65, 0x2e, 0x65, 0x64, 0x75, 0x08, 0xa1,
-    0x01, 0xa5, 0x01, 0x02, 0x02, 0x41, 0x32, 0x20, 0x01, 0x21, 0x58, 0x20, 0xbb, 0xc3, 0x49, 0x60,
-    0x52, 0x6e, 0xa4, 0xd3, 0x2e, 0x94, 0x0c, 0xad, 0x2a, 0x23, 0x41, 0x48, 0xdd, 0xc2, 0x17, 0x91,
-    0xa1, 0x2a, 0xfb, 0xcb, 0xac, 0x93, 0x62, 0x20, 0x46, 0xdd, 0x44, 0xf0, 0x22, 0x58, 0x20, 0x45,
-    0x19, 0xe2, 0x57, 0x23, 0x6b, 0x2a, 0x0c, 0xe2, 0x02, 0x3f, 0x09, 0x31, 0xf1, 0xf3, 0x86, 0xca,
-    0x7a, 0xfd, 0xa6, 0x4f, 0xcd, 0xe0, 0x10, 0x8c, 0x22, 0x4c, 0x51, 0xea, 0xbf, 0x60, 0x72
-};
-// CRED_I = Initiator's credential (edge/mari_edge public key)
+
+// CRED_I = node's credential (initiator; 117 bytes)
 static const uint8_t CRED_I_BYTES[117] = {
     0xa2, 0x02, 0x78, 0x20, 0x38, 0x35, 0x43, 0x31, 0x45, 0x43, 0x32, 0x31, 0x46, 0x32, 0x36, 0x46,
     0x34, 0x31, 0x45, 0x37, 0x41, 0x33, 0x30, 0x41, 0x38, 0x41, 0x38, 0x37, 0x42, 0x44, 0x42, 0x45,
@@ -121,77 +126,112 @@ static const uint8_t CRED_I_BYTES[117] = {
     0xda, 0xc4, 0x19, 0x53, 0x2c
 };
 
-// EDHOC Responder state
-static EdhocResponder  edhoc_responder = {0};
-static CredentialC     cred_r          = {0};
-static CredentialC     cred_i          = {0};
-static EdhocMessageBuffer edhoc_message_2 = {0};
-static EdhocMessageBuffer edhoc_message_4 = {0};
-static EADItemC        ead_1_out       = {0};
-static EADItemC        ead_3_out       = {0};
-static EADItemC        ead_4_out       = {0};
-static IdCred          id_cred_i_out   = {0};
-static uint8_t         edhoc_c_r       = 0;
-static uint8_t         edhoc_prk_out[32] = {0};
+// CRED_R = expected edge/responder credential (95 bytes)
+static const uint8_t CRED_R_BYTES[95] = {
+    0xa2, 0x02, 0x6b, 0x65, 0x78, 0x61, 0x6d, 0x70, 0x6c, 0x65, 0x2e, 0x65, 0x64, 0x75, 0x08, 0xa1,
+    0x01, 0xa5, 0x01, 0x02, 0x02, 0x41, 0x32, 0x20, 0x01, 0x21, 0x58, 0x20, 0xbb, 0xc3, 0x49, 0x60,
+    0x52, 0x6e, 0xa4, 0xd3, 0x2e, 0x94, 0x0c, 0xad, 0x2a, 0x23, 0x41, 0x48, 0xdd, 0xc2, 0x17, 0x91,
+    0xa1, 0x2a, 0xfb, 0xcb, 0xac, 0x93, 0x62, 0x20, 0x46, 0xdd, 0x44, 0xf0, 0x22, 0x58, 0x20, 0x45,
+    0x19, 0xe2, 0x57, 0x23, 0x6b, 0x2a, 0x0c, 0xe2, 0x02, 0x3f, 0x09, 0x31, 0xf1, 0xf3, 0x86, 0xca,
+    0x7a, 0xfd, 0xa6, 0x4f, 0xcd, 0xe0, 0x10, 0x8c, 0x22, 0x4c, 0x51, 0xea, 0xbf, 0x60, 0x72
+};
 
-//used during execution of attestation
-//static EADItemC  ead_2 = {0};
-//=========================== private ==========================================
+// EDHOC Initiator state
+static EdhocInitiator     _initiator   = {0};
+static CredentialC        _cred_i      = {0};
+static CredentialC        _cred_r      = {0};
+static CredentialC        _fetched_r   = {0};
+static IdCred             _id_cred_r   = {0};
+static EdhocMessageBuffer _msg1        = {0};
+static EdhocMessageBuffer _msg3        = {0};
+static EADItemC           _ead_2_out   = {0};
+static EADItemC           _ead_3_out   = {0};
+static uint8_t            _c_r         = 0;
+static uint8_t            _prk_out[32] = {0};
+static uint8_t            _nonce[MAURA_NONCE_SIZE]  = {0};
+static uint8_t            _nonce_len                = 0;
 
-static void _led_blink_callback(void) {
+//=========================== private =========================================
+
+static void _led_blink_cb(void) {
     if (!mari_node_is_connected()) {
-        // not connected: blink blue (alternate between OFF and BLUE every 10ms)
-        board_set_led_mari(node_vars.led_blink_state ? OFF : BLUE);
-        node_vars.led_blink_state = !node_vars.led_blink_state;
+        board_set_led_mari(_node_vars.led_blink_state ? OFF : BLUE);
+        _node_vars.led_blink_state = !_node_vars.led_blink_state;
     }
 }
 
-static void mari_event_callback(mr_event_t event, mr_event_data_t event_data) {
-    if (event == MARI_EDHOC_MSG3) {
-        // store in dedicated buffer: MARI_CONNECTED fires right after in the same call chain
-        // and would overwrite the single-slot event before the main loop can read it
-        _edhoc_msg3_pend.len    = event_data.data.edhoc.len;
-        _edhoc_msg3_pend.asn_dl = mr_mac_get_asn();  // record when join response (msg3) arrived
-        memcpy(_edhoc_msg3_pend.data, event_data.data.edhoc.data, event_data.data.edhoc.len);
-        _edhoc_msg3_pend.ready = true;
+static void _send_status_cb(void) {
+    _node_vars.send_status_ready = true;
+}
+
+
+static void _reset_edhoc_state(void) {
+    _node_vars.edhoc_started    = false;
+    _node_vars.edhoc_msg3_ready = false;
+    _node_vars.edhoc_completed  = false;
+    _node_vars.msg3_acked       = false;
+    _node_vars.msg3_tx_count    = 0;
+    _node_vars.conn_asn_dl      = 0;
+    _msg2_pend.ready            = false;
+    memset(&_initiator, 0, sizeof(_initiator));
+    memset(&_msg1, 0, sizeof(_msg1));
+    memset(&_msg3, 0, sizeof(_msg3));
+    memset(&_ead_2_out, 0, sizeof(_ead_2_out));
+    memset(&_ead_3_out, 0, sizeof(_ead_3_out));
+    memset(_nonce, 0, sizeof(_nonce));
+    _nonce_len = 0;
+}
+
+/**
+ * @brief Start a fresh EDHOC session: generate msg1 with EAD_1=[258] and
+ *        append to the pending join request so it is sent when the node joins.
+ */
+static void _start_edhoc_session(void) {
+    if (initiator_new(&_initiator) != 0) {
+        printf("[MAURA] initiator_new failed\n");
         return;
     }
-    memcpy(&node_vars.event, &event, sizeof(mr_event_t));
-    memcpy(&node_vars.event_data, &event_data, sizeof(mr_event_data_t));
-    node_vars.event_ready = true;
+
+    EADItemC ead_1 = {0};
+    maura_prepare_ead_1(&ead_1, 1, false);
+
+    if (initiator_prepare_message_1(&_initiator, NULL, &ead_1, &_msg1) != 0) {
+        printf("[MAURA] prepare_message_1 failed\n");
+        return;
+    }
+
+    mr_queue_append_edhoc_to_join_request(_msg1.content, (uint8_t)_msg1.len);
+    _node_vars.edhoc_started = true;
 }
 
-static void handle_metrics_payload(mr_metrics_payload_t *metrics_payload) {
-    // update metrics probe
-    metrics_payload->node_rx_count        = ++node_stats.rx_counter;
-    metrics_payload->node_rx_asn          = mr_mac_get_asn();
-    metrics_payload->node_tx_count        = ++node_stats.tx_counter;
-    metrics_payload->node_tx_enqueued_asn = mr_mac_get_asn();
-    metrics_payload->rssi_at_node         = mr_radio_rssi();
-
-    // send metrics probe to gateway
-    mari_node_tx_payload((uint8_t *)metrics_payload, sizeof(mr_metrics_payload_t));
+static void _mari_event_cb(mr_event_t event, mr_event_data_t event_data) {
+    if (event == MARI_EDHOC_MSG3) {
+        // Join response contains msg2 from edge. Store separately:
+        // MARI_CONNECTED fires immediately after in the same call chain and would
+        // overwrite the single-slot event before the main loop can read it.
+        uint8_t len = event_data.data.edhoc.len;
+        if (len > MARI_EDHOC_MAX_MSG_LEN) { len = MARI_EDHOC_MAX_MSG_LEN; }
+        memcpy(_msg2_pend.data, event_data.data.edhoc.data, len);
+        _msg2_pend.len   = len;
+        _msg2_pend.ready = true;
+        return;
+    }
+    memcpy(&_node_vars.event, &event, sizeof(mr_event_t));
+    memcpy(&_node_vars.event_data, &event_data, sizeof(mr_event_data_t));
+    _node_vars.event_ready = true;
 }
 
-static void _send_status_packet_callback(void) {
-    node_vars.send_status_ready = true;
-}
-
-//=========================== main =============================================
+//=========================== main ============================================
 
 int main(void) {
-    // printf("Hello Mari Node %016llX\n", mr_device_id());
-    mr_timer_hf_init(MARI_APP_TIMER_DEV);
-
+    mr_timer_hf_init(MAURA_APP_TIMER_DEV);
     board_init();
     board_set_led_mari(BLUE);
 
-    if (credential_new(&cred_r, CRED_R_BYTES, sizeof(CRED_R_BYTES)) != 0) { while (1); }
-    if (credential_new(&cred_i, CRED_I_BYTES, sizeof(CRED_I_BYTES)) != 0) { while (1); }
+    if (credential_new(&_cred_i, CRED_I_BYTES, sizeof(CRED_I_BYTES)) != 0) { while (1); }
+    if (credential_new(&_cred_r, CRED_R_BYTES, sizeof(CRED_R_BYTES)) != 0) { while (1); }
 
-    // Random delay before joining to spread the join storm across rounds.
-    // nRF52840 @ 64 MHz: inner loop ~1 cycle per NOP → ~128000 cycles ≈ 2ms per unit.
-    // rand_val in [0,255] gives 0–510ms spread.
+    // Random backoff to spread join requests across beacon rounds
     mr_rng_init();
     uint8_t rand_val = 0;
     mr_rng_read_u8(&rand_val);
@@ -199,129 +239,74 @@ int main(void) {
         for (volatile uint32_t i = 0; i < 64000; i++) { __NOP(); }
     }
 
-    mari_init(MARI_NODE, 0xa3, schedule_app, &mari_event_callback);
+    mari_init(MARI_NODE, 0xa3, schedule_app, &_mari_event_cb);
 
-    // blink blue every 100ms
-    mr_timer_hf_set_periodic_us(MARI_APP_TIMER_DEV, 0, 100 * 1000, &_led_blink_callback);
-
-    // send status packet every 500ms
-    mr_timer_hf_set_periodic_us(MARI_APP_TIMER_DEV, 1, 500 * 1000, &_send_status_packet_callback);
+    mr_timer_hf_set_periodic_us(MAURA_APP_TIMER_DEV, 0, 100 * 1000, &_led_blink_cb);
+    mr_timer_hf_set_periodic_us(MAURA_APP_TIMER_DEV, 1, 500 * 1000, &_send_status_cb);
 
     board_set_led_mari(OFF);
+
+    // Generate msg1 now so it is ready when the node first joins
+    _start_edhoc_session();
 
     while (1) {
         __SEV();
         __WFE();
         __WFE();
 
-        if (node_vars.event_ready) {
-            node_vars.event_ready = false;
+        if (_node_vars.event_ready) {
+            _node_vars.event_ready = false;
 
-            mr_event_t      event      = node_vars.event;
-            mr_event_data_t event_data = node_vars.event_data;
+            mr_event_t      event      = _node_vars.event;
+            mr_event_data_t event_data = _node_vars.event_data;
 
             switch (event) {
                 case MARI_NEW_PACKET:
                 {
-                    mari_packet_t packet = event_data.data.new_packet;
-
-                    if (packet.payload_len >= 1 && packet.payload[0] == MARI_REBOOT_PAYLOAD_TAG) {
+                    mari_packet_t pkt = event_data.data.new_packet;
+                    if (pkt.payload_len >= 1 && pkt.payload[0] == MARI_REBOOT_PAYLOAD_TAG) {
                         NVIC_SystemReset();
-                        break;
-                    } else if (packet.payload_len >= 2 && packet.payload[0] == MARI_EDHOC_PAYLOAD_TAG) {
-                        // EDHOC msg3 delivered as downlink data packet
-                        uint8_t m3_len = packet.payload[1];
-                        if (m3_len > 0 && m3_len <= MAX_MESSAGE_SIZE_LEN &&
-                            (uint8_t)(2 + m3_len) <= packet.payload_len) {
-                            EdhocMessageBuffer msg3 = {0};
-                            memcpy(msg3.content, packet.payload + 2, m3_len);
-                            msg3.len = m3_len;
-                            if (responder_parse_message_3(&edhoc_responder, &msg3, &id_cred_i_out, &ead_3_out) != 0) { break; }
-                            if (responder_verify_message_3(&edhoc_responder, &cred_i, &edhoc_prk_out) != 0) { break; }
-                            uint8_t evidence_cbor[MAX_EVIDENCE];
-                            uint8_t evidence_len = 0;
-                            mr_attestation_evidence_generation(node_vars.conn_asn_dl, edhoc_responder.processed_m3.prk_exporter, evidence_cbor, &evidence_len);
-                            ead_4_out.label       = 1;
-                            ead_4_out.is_critical = false;
-                            memcpy(ead_4_out.value.content, evidence_cbor, evidence_len);
-                            ead_4_out.value.len   = evidence_len;
-                            if (responder_prepare_message_4(&edhoc_responder, &ead_4_out, &edhoc_message_4) != 0) { break; }
-                            node_vars.edhoc_msg4_ready = true;
-                            node_vars.edhoc_completed  = true;
-                            node_vars.msg4_tx_count    = 0;
+                    } else if (pkt.payload_len >= 1 && pkt.payload[0] == MAURA_MSG3_ACK_TAG) {
+                        // Edge confirmed msg3 receipt -- stop retransmitting.
+                        _node_vars.msg3_acked      = true;
+                        _node_vars.edhoc_msg3_ready = false;
+                    } else if (pkt.payload_len >= 2 && pkt.payload[0] == MARI_EDHOC_PAYLOAD_TAG) {
+                        // msg2 delivered as downlink data packet (retry after join)
+                        uint8_t len = pkt.payload[1];
+                        if (len > 0 && len <= MAX_MESSAGE_SIZE_LEN &&
+                            (uint8_t)(2u + len) <= pkt.payload_len &&
+                            !_msg2_pend.ready && !_node_vars.edhoc_completed) {
+                            uint8_t capped = (len < MARI_EDHOC_MAX_MSG_LEN) ? len : MARI_EDHOC_MAX_MSG_LEN;
+                            memcpy(_msg2_pend.data, pkt.payload + 2, capped);
+                            _msg2_pend.len   = capped;
+                            _msg2_pend.ready = true;
                         }
-                    } else if (packet.payload_len == sizeof(mr_metrics_payload_t) && packet.payload[0] == MARI_PAYLOAD_TYPE_METRICS_PROBE) {
-                        handle_metrics_payload((mr_metrics_payload_t *)packet.payload);
-                    } else {
-                        // TBD custom application logic
+                    } else if (pkt.payload_len == sizeof(mr_metrics_payload_t) &&
+                               pkt.payload[0] == MARI_PAYLOAD_TYPE_METRICS_PROBE) {
+                        mr_metrics_payload_t *mp = (mr_metrics_payload_t *)pkt.payload;
+                        mp->node_rx_count        = ++_node_stats.rx_counter;
+                        mp->node_rx_asn          = mr_mac_get_asn();
+                        mp->node_tx_count        = ++_node_stats.tx_counter;
+                        mp->node_tx_enqueued_asn = mr_mac_get_asn();
+                        mp->rssi_at_node         = mr_radio_rssi();
+                        mari_node_tx_payload((uint8_t *)mp, sizeof(mr_metrics_payload_t));
                     }
-
                     break;
                 }
                 case MARI_CONNECTED:
                 {
-                    uint64_t gateway_id = event_data.data.gateway_info.gateway_id;
-                    board_set_led_mari_gateway(gateway_id);
+                    uint64_t gw_id = event_data.data.gateway_info.gateway_id;
+                    board_set_led_mari_gateway(gw_id);
                     board_set_led_mari(YELLOW);
-                    node_vars.conn_asn_dl = mr_mac_get_asn();
+                    _node_vars.conn_asn_dl = mr_mac_get_asn();
                     break;
                 }
                 case MARI_DISCONNECTED:
                 {
                     board_set_led_mari(OFF);
-                    node_vars.edhoc_started    = false;
-                    node_vars.edhoc_msg4_ready = false;
-                    node_vars.edhoc_completed  = false;
-                    node_vars.msg4_tx_count    = 0;
-                    node_vars.conn_asn_dl      = 0;
-                    _edhoc_msg3_pend.ready     = false;
-                    break;
-                }
-                // case MARI_ATTESTATION: (disabled, pure EDHOC only)
-                case MARI_EDHOC_MSG1:
-                {
-                    // only process msg1 once; every beacon carries msg1 so without this guard
-                    // the responder state would be reset on each beacon, causing msg3 to mismatch
-                    if (node_vars.edhoc_started) { break; }
-
-                    // process msg1 and generate msg2, append to pending join request
-                    EdhocMessageBuffer msg1 = {0};
-                    uint8_t            m1_len = event_data.data.edhoc.len;
-                    if (m1_len > MAX_MESSAGE_SIZE_LEN) { m1_len = MAX_MESSAGE_SIZE_LEN; }
-                    memcpy(msg1.content, event_data.data.edhoc.data, m1_len);
-                    msg1.len = m1_len;
-
-                    // initialize responder (generates ephemeral key pair)
-                    if (responder_new(&edhoc_responder) != 0) { break; }
-                    // process msg1
-                    uint8_t c_i_out = 0;
-                    if (responder_process_message_1(&edhoc_responder, &msg1, &c_i_out, &ead_1_out) != 0) { break; }
-                    // build EAD_2: CBOR array [node_id, asn] for Mari context binding
-                    EADItemC ead_2_item = {0};
-                    ead_2_item.label       = 2;
-                    ead_2_item.is_critical = false;
-                    {
-                        uint8_t *p = ead_2_item.value.content;
-                        uint8_t  n = 0;
-                        p[n++] = 0x82;  // CBOR array(2)
-                        uint64_t nid = mr_device_id();
-                        p[n++] = 0x1b;
-                        for (int s = 7; s >= 0; s--) { p[n++] = (nid >> (s * 8)) & 0xFF; }
-                        uint64_t asn = mr_mac_get_asn();
-                        p[n++] = 0x1b;
-                        for (int s = 7; s >= 0; s--) { p[n++] = (asn >> (s * 8)) & 0xFF; }
-                        ead_2_item.value.len = n;
-                    }
-                    // prepare msg2
-                    if (responder_prepare_message_2(&edhoc_responder, &cred_r, &R,
-                                                    ByReference, &ead_2_item,
-                                                    &edhoc_message_2, &edhoc_c_r) != 0) { break; }
-                    // lock in this EDHOC session before appending msg2 to join request
-                    node_vars.edhoc_started = true;
-                    mr_queue_append_edhoc_to_join_request(edhoc_message_2.content, (uint8_t)edhoc_message_2.len);
-                    printf("[EDHOC] msg2 (%u B): ", (unsigned)edhoc_message_2.len);
-                    for (size_t i = 0; i < edhoc_message_2.len; i++) { printf("%02x", edhoc_message_2.content[i]); }
-                    printf("\n");
+                    _reset_edhoc_state();
+                    // Start fresh EDHOC session for the next join attempt
+                    _start_edhoc_session();
                     break;
                 }
                 default:
@@ -329,62 +314,94 @@ int main(void) {
             }
         }
 
-        // drain pending EDHOC msg3 (stored separately to avoid being overwritten by MARI_CONNECTED)
-        if (_edhoc_msg3_pend.ready) {
-            _edhoc_msg3_pend.ready = false;
-            EdhocMessageBuffer msg3   = {0};
-            uint8_t            m3_len = _edhoc_msg3_pend.len;
-            uint64_t           asn_dl = _edhoc_msg3_pend.asn_dl;
-            if (m3_len > MAX_MESSAGE_SIZE_LEN) { m3_len = MAX_MESSAGE_SIZE_LEN; }
-            memcpy(msg3.content, _edhoc_msg3_pend.data, m3_len);
-            msg3.len = m3_len;
-            if (responder_parse_message_3(&edhoc_responder, &msg3, &id_cred_i_out, &ead_3_out) != 0) { goto msg3_done; }
-            if (responder_verify_message_3(&edhoc_responder, &cred_i, &edhoc_prk_out) != 0) { goto msg3_done; }
-            {
-                uint8_t evidence_cbor[MAX_EVIDENCE];
-                uint8_t evidence_len = 0;
-                mr_attestation_evidence_generation(asn_dl, edhoc_responder.processed_m3.prk_exporter, evidence_cbor, &evidence_len);
-                ead_4_out.label       = 1;
-                ead_4_out.is_critical = false;
-                memcpy(ead_4_out.value.content, evidence_cbor, evidence_len);
-                ead_4_out.value.len   = evidence_len;
+        // Drain pending msg2 from join response (stored separately to avoid race with MARI_CONNECTED)
+        if (_msg2_pend.ready) {
+            _msg2_pend.ready = false;
+
+            EdhocMessageBuffer msg2 = {0};
+            uint8_t            len  = _msg2_pend.len;
+            if (len > MAX_MESSAGE_SIZE_LEN) { len = (uint8_t)MAX_MESSAGE_SIZE_LEN; }
+            memcpy(msg2.content, _msg2_pend.data, len);
+            msg2.len = len;
+
+            // Parse msg2: extracts c_r, id_cred_r, ead_2
+            if (initiator_parse_message_2(&_initiator, &msg2, &_c_r, &_id_cred_r, &_ead_2_out) != 0) {
+                printf("[MAURA] parse_message_2 failed\n");
+                goto msg2_done;
             }
-            if (responder_prepare_message_4(&edhoc_responder, &ead_4_out, &edhoc_message_4) != 0) { goto msg3_done; }
-            node_vars.edhoc_msg4_ready = true;
-            node_vars.edhoc_completed  = true;
-            node_vars.msg4_tx_count    = 0;
-            msg3_done:;
+
+            // Fetch/verify edge credential
+            if (credential_check_or_fetch(&_cred_r, &_id_cred_r, &_fetched_r) != 0) {
+                printf("[MAURA] credential_check_or_fetch failed\n");
+                goto msg2_done;
+            }
+            if (initiator_verify_message_2(&_initiator, &I, &_cred_i, &_fetched_r) != 0) {
+                printf("[MAURA] verify_message_2 failed\n");
+                goto msg2_done;
+            }
+
+            // Decode EAD_2 to get verifier nonce
+            uint32_t ev_type = 0;
+            if (maura_decode_ead_2(_ead_2_out.value.content, &ev_type, _nonce, &_nonce_len) != 0) {
+                printf("[MAURA] decode_ead_2 failed\n");
+                goto msg2_done;
+            }
+            printf("[MAURA] EAD_2 ev_type=%u\n", (unsigned)ev_type);
+
+            // Compute EAD_3: COSE_Sign1 with attestation_binder in external_aad
+            maura_prepare_ead_3(&_ead_3_out, 1, false,
+                                 _nonce, _nonce_len,
+                                 _msg1.content, (uint8_t)_msg1.len,
+                                 msg2.content, (uint8_t)msg2.len);
+
+            // Prepare msg3 with EAD_3
+            if (initiator_prepare_message_3(&_initiator, ByReference, &_ead_3_out, &_msg3, &_prk_out) != 0) {
+                printf("[MAURA] prepare_message_3 failed\n");
+                goto msg2_done;
+            }
+
+            _node_vars.edhoc_msg3_ready = true;
+            _node_vars.edhoc_completed  = true;
+            _node_vars.msg3_acked       = false;
+            _node_vars.msg3_tx_count    = 0;
+            board_set_led_mari(GREEN);
+            printf("[MAURA] msg3 (%u B) ready\n", (unsigned)_msg3.len);
+
+            msg2_done:;
         }
 
-        if (node_vars.send_status_ready) {
-            node_vars.send_status_ready = false;
+        if (_node_vars.send_status_ready) {
+            _node_vars.send_status_ready = false;
 
-            // Stuck yellow: connected but msg3 never arrived → reset and retry
-            if (mari_node_is_connected() && node_vars.edhoc_started && !node_vars.edhoc_completed) {
-                if (node_vars.conn_asn_dl > 0 &&
-                    (mr_mac_get_asn() - node_vars.conn_asn_dl) > MSG3_TIMEOUT_SLOTS) {
+            // Timeout: connected but msg2 never arrived → reset and retry
+            if (mari_node_is_connected() && _node_vars.edhoc_started && !_node_vars.edhoc_completed) {
+                if (_node_vars.conn_asn_dl > 0 &&
+                    (mr_mac_get_asn() - _node_vars.conn_asn_dl) > MSG2_TIMEOUT_SLOTS) {
                     NVIC_SystemReset();
                 }
             }
 
-            if (node_vars.edhoc_msg4_ready) {
-                uint8_t msg4_buf[2 + MARI_EDHOC_MAX_MSG_LEN];
-                uint8_t pos       = 0;
-                msg4_buf[pos++]   = MARI_EDHOC_PAYLOAD_TAG;
-                msg4_buf[pos++]   = (uint8_t)edhoc_message_4.len;
-                memcpy(msg4_buf + pos, edhoc_message_4.content, edhoc_message_4.len);
-                pos += (uint8_t)edhoc_message_4.len;
-                printf("[EDHOC] msg4 tx#%u EDHOC=%u B: ", (unsigned)(node_vars.msg4_tx_count + 1), (unsigned)edhoc_message_4.len);
-                for (uint8_t i = 0; i < pos; i++) { printf("%02x", msg4_buf[i]); }
-                printf("\n");
-                mari_node_tx_payload(msg4_buf, pos);
-                board_set_led_mari(GREEN);
-                node_vars.msg4_tx_count++;
-                if (node_vars.msg4_tx_count >= MSG4_MAX_RETRIES) {
-                    node_vars.edhoc_msg4_ready = false;  // stop retrying after max attempts
+            if (_node_vars.edhoc_msg3_ready && !_node_vars.msg3_acked) {
+                // Retransmit msg3 until the edge acks it (MAURA_MSG3_ACK_TAG, handled
+                // above in MARI_NEW_PACKET) or we hit MSG3_MAX_RETRIES. This is smarter
+                // than either extreme: a single unacknowledged shot can't tell success
+                // from failure (any one lost packet permanently fails the round), while
+                // blindly retrying a fixed number of times regardless of outcome just
+                // floods the air/UART even after the edge already has it. The ack lets
+                // us stop the instant delivery is confirmed.
+                uint8_t buf[2 + MAURA_MSG_BUF_LEN];
+                uint8_t pos   = 0;
+                buf[pos++]    = MARI_EDHOC_PAYLOAD_TAG;
+                buf[pos++]    = (uint8_t)_msg3.len;
+                memcpy(buf + pos, _msg3.content, _msg3.len);
+                pos += (uint8_t)_msg3.len;
+                mari_node_tx_payload(buf, pos);
+                _node_vars.msg3_tx_count++;
+                if (_node_vars.msg3_tx_count >= MSG3_MAX_RETRIES) {
+                    NVIC_SystemReset();
                 }
             } else {
-                mari_node_tx_payload((uint8_t *)status_packet_mock, sizeof(status_packet_mock));
+                mari_node_tx_payload(_status_pkt, sizeof(_status_pkt));
             }
         }
 

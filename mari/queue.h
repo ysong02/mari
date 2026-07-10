@@ -45,4 +45,6 @@ void mr_queue_set_edhoc_msg1(uint8_t *data, uint8_t len);
 void mr_queue_set_edhoc_msg3(uint64_t node_id, uint8_t *data, uint8_t len);
 void mr_queue_append_edhoc_to_join_request(uint8_t *data, uint8_t len);
 
+void mr_queue_gateway_reset_edhoc_state(void);
+
 #endif  // __QUEUE_H
