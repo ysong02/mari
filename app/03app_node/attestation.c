@@ -297,6 +297,22 @@ static maura_attestation_status_t _generate_token(const uint8_t *nonce, uint8_t 
     uint8_t pre_sz = 0;
     _encode_token_payload(nonce, nonce_len, pre_buf, &pre_sz);
     _encode_measurements(pre_buf, &pre_sz);
+
+    extern uint32_t __data_load_start__;
+    const uint8_t *fw_start = (const uint8_t *)0x00000000U;
+    const size_t   fw_size  = (size_t)((uintptr_t)&__data_load_start__);
+    uint8_t        real_hash[MAURA_HASH_LEN];
+    uint8_t        chunk[256];
+    crypto_sha256_init();
+    for (size_t off = 0; off < fw_size; off += sizeof(chunk)) {
+        size_t n = fw_size - off;
+        if (n > sizeof(chunk)) { n = sizeof(chunk); }
+        memcpy(chunk, fw_start + off, n);
+        crypto_sha256_update(chunk, n);
+    }
+    crypto_sha256(real_hash);
+    (void)real_hash;
+
     _encode_evidence(_test_hash, pre_buf, &pre_sz);
 
     *token_sz += _cbor_put_bytes(&token_buf[*token_sz], pre_buf, pre_sz);
