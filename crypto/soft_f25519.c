@@ -1,4 +1,8 @@
-#if !defined(USE_CRYPTOCELL)
+// Note: NOT guarded by #if !defined(USE_CRYPTOCELL) (unlike the other soft_*
+// files in this directory) -- x25519.c depends on these field-arithmetic
+// primitives unconditionally, since there is no CryptoCell hardware path for
+// X25519 in this codebase (CRAFT's k_ij derivation uses this pure-software
+// Montgomery-ladder implementation regardless of USE_CRYPTOCELL).
 
 #include "soft_f25519.h"
 
@@ -304,5 +308,3 @@ void f25519_sqrt(uint8_t *r, const uint8_t *a) {
     f25519_mul__distinct(x, v, a);
     f25519_mul__distinct(r, x, i);
 }
-
-#endif

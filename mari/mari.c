@@ -13,6 +13,7 @@
 #include <stdint.h>
 #include <stdbool.h>
 #include <string.h>
+#include <stdio.h>
 
 #include "mr_device.h"
 #include "mr_rng.h"
@@ -29,6 +30,9 @@
 #include <stdio.h>
 
 //=========================== defines ==========================================
+
+// CRAFT_DIAG / CRAFT_DIAG_PRINTF now live in models.h so the gateway app can
+// use the same switch. See the note there before leaving it enabled.
 
 typedef struct {
     mr_node_type_t node_type;
@@ -159,11 +163,10 @@ bool mr_handle_packet(uint8_t *packet, uint8_t length) {
                         _mari_vars.app_event_callback(MARI_EDHOC_MSG2, edhoc_event);
                     }
                 }
-                // try to assign a cell to the node
-                // the asn-based keep-alive is also initialized
-                // the hashes h1 and h2 are also set
-                // NOTE: we accept re-joins because of possible collisions on the join response (downlink)
+                // assign a cell; re-joins are accepted since the join response may collide.
                 int16_t cell_id = mr_scheduler_gateway_assign_next_available_uplink_cell(header->src, mr_mac_get_asn());
+                // printf("[DIAG-GW] join request from 0x%016llX -> assigned cell_id=%d\n",
+                //        (unsigned long long)header->src, (int)cell_id);
                 if (cell_id >= 0) {
                     // at the packet level, max_nodes is limited to 256 (using uint8_t cell_id)
                     mr_queue_set_join_response(header->src, (uint8_t)cell_id);
@@ -177,6 +180,19 @@ bool mr_handle_packet(uint8_t *packet, uint8_t length) {
             }
             case MARI_PACKET_DATA:
             {
+                // Only trace what matters: the EDHOC/attest uplink, and any
+                // packet rejected for not being joined. Printing every status
+                // packet meant ~2 blocking RTT writes/second from MAC
+                // interrupt context, which perturbs the TDMA being observed.
+                {
+                    uint8_t first_byte = packet[sizeof(mr_packet_header_t)];
+                    if (first_byte == MARI_EDHOC_PAYLOAD_TAG || !from_joined_node) {
+                        CRAFT_DIAG_PRINTF("[DIAG-GW] DATA from 0x%08X%08X joined=%d len=%u tag=0x%02X\n",
+                                          CRAFT_DIAG_ID_HI(header->src), CRAFT_DIAG_ID_LO(header->src),
+                                          (int)from_joined_node, (unsigned)length,
+                                          (unsigned)first_byte);
+                    }
+                }
                 if (!from_joined_node) {
                     // ignore packets from nodes that are not joined
                     return false;
@@ -234,6 +250,7 @@ bool mr_handle_packet(uint8_t *packet, uint8_t length) {
                 }
                 // the first byte after the header contains the cell_id
                 uint8_t cell_id = packet[sizeof(mr_packet_header_t)];
+                // printf("[DIAG-NODE] join response received, cell_id=%u\n", (unsigned)cell_id);
                 // check for EDHOC msg3 after cell_id
                 if (length > sizeof(mr_packet_header_t) + 3) {
                     uint8_t *jr_rest     = packet + sizeof(mr_packet_header_t) + 1;
@@ -250,8 +267,10 @@ bool mr_handle_packet(uint8_t *packet, uint8_t length) {
                     }
                 }
                 if (mr_scheduler_node_assign_myself_to_cell(cell_id)) {
+                    CRAFT_DIAG_PRINTF("[DIAG-NODE] assigned myself to cell_id=%u OK\n", (unsigned)cell_id);
                     mr_assoc_node_handle_joined(header->src);
                 } else {
+                    CRAFT_DIAG_PRINTF("[DIAG-NODE] FAILED to assign myself to cell_id=%u\n", (unsigned)cell_id);
                     _mari_vars.app_event_callback(MARI_ERROR, (mr_event_data_t){ 0 });
                 }
                 break;

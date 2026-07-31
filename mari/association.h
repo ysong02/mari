@@ -70,6 +70,8 @@ bool mr_assoc_gateway_get_attest_dl_asn(uint64_t node_id, uint64_t *asn_dl_out);
 void mr_assoc_gateway_remove_node(uint64_t node_id);
 
 // remove all nodes from the schedule and clear the bloom filter (used for coordinated reboot)
-void mr_assoc_gateway_remove_all_nodes(void);
+/// Deassign every uplink cell, except nodes heard from after
+/// `keep_if_heard_after_asn` (they have already rebooted and rejoined).
+void mr_assoc_gateway_remove_all_nodes(uint64_t keep_if_heard_after_asn);
 
 #endif  // __ASSOCIATION_H

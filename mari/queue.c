@@ -22,7 +22,6 @@
 #include "mari.h"
 #include "queue.h"
 
-// for attestation
 #include "attestation.h"
 #include <stdio.h>
 
@@ -31,7 +30,8 @@
 #define EDHOC_MSG3_ENTRIES       32
 #define PENDING_JOINRESP_SIZE    32
 
-#define JOINRESP_WAIT_TIMEOUT_SLOTS 300  
+// How long the gateway waits for mari_edge's connect reply before falling back to a bare join response.
+#define JOINRESP_WAIT_TIMEOUT_SLOTS 3000
 
 typedef struct {
     uint64_t node_id;
@@ -86,9 +86,14 @@ static uint8_t pending_msg2_len                          = 0;
 // Gateway side: join responses held until msg3 arrives from the edge (one slot per node)
 static pending_joinresp_t pending_joinresp_pool[PENDING_JOINRESP_SIZE] = { 0 };
 
+// Round-robin state between the two gateway downlink sources (see mr_queue_next_packet).
+static bool _downlink_prefer_general = false;
+
 //=========================== prototypes =======================================
 
-static void _finalize_join_response(uint64_t node_id, uint8_t cell_id);
+static void    _finalize_join_response(uint64_t node_id, uint8_t cell_id);
+static int16_t _gateway_find_uplink_cell_id(uint64_t node_id);
+static uint8_t _pop_join_response(uint8_t *packet);
 
 //=========================== public ===========================================
 
@@ -129,23 +134,26 @@ uint8_t mr_queue_next_packet(slot_type_t slot_type, uint8_t *packet) {
                     pending_joinresp_pool[pi].valid = false;
                 }
             }
-            // Priority 1: JOIN_RESPONSE FIFO
-            if (queue_vars.joinresp_queue.current != queue_vars.joinresp_queue.last) {
-                mr_packet_t *jp = &queue_vars.joinresp_queue.packets[queue_vars.joinresp_queue.current];
-                memcpy(packet, jp->buffer, jp->length);
-                len = jp->length;
-                queue_vars.joinresp_queue.current =
-                    (queue_vars.joinresp_queue.current + 1) % MARI_JOIN_RESPONSE_QUEUE_SIZE;
+            // Alternate between the JOIN_RESPONSE FIFO and the general queue.
+            // These used to be strict priority (FIFO first), which starved the
+            // general queue -- the path carrying the attest ack and the reboot
+            // broadcast -- for as long as join responses kept being produced.
+            // mari_edge's connect-reply retry loop produces one every 2s per
+            // node via _requeue_connect_reply_retry(), so that starvation was
+            // sustained, not transient.
+            bool joinresp_ready = queue_vars.joinresp_queue.current != queue_vars.joinresp_queue.last;
 
-                // record asn_dl for attestation freshness: the downlink ASN when join response was sent
-                mr_packet_header_t *h = (mr_packet_header_t *)packet;
-                mr_assoc_gateway_set_attest_dl_asn(h->dst, mr_mac_get_asn());
+            if (joinresp_ready && !_downlink_prefer_general) {
+                len                      = _pop_join_response(packet);
+                _downlink_prefer_general = true;
             } else {
-                // load a packet from the queue, if any is available
                 len = mr_queue_peek(packet);
                 if (len) {
-                    // actually pop the packet from the queue
                     mr_queue_pop();
+                    _downlink_prefer_general = false;
+                } else if (joinresp_ready) {
+                    len                      = _pop_join_response(packet);
+                    _downlink_prefer_general = true;
                 }
             }
         }
@@ -178,14 +186,6 @@ void mr_queue_add(uint8_t *packet, uint8_t length) {
         // wait for the queue to be unlocked
     }
     queue_vars.queue_locked = true;
-
-    // // enqueue for transmission
-    // memcpy(queue_vars.packet_queue.packets[queue_vars.packet_queue.last].buffer, packet, length);
-    // queue_vars.packet_queue.packets[queue_vars.packet_queue.last].length = length;
-    // // increment the `last` index
-    // queue_vars.packet_queue.last = (queue_vars.packet_queue.last + 1) % MARI_PACKET_QUEUE_SIZE;
-
-    // queue_vars.queue_locked = false;
 
     // check if queue is full (next position would collide with current)
     uint8_t next_last = (queue_vars.packet_queue.last + 1) % MARI_PACKET_QUEUE_SIZE;
@@ -269,10 +269,36 @@ void mr_queue_set_join_request(uint64_t node_id) {
     }
 }
 
+// Pop the next join response off the FIFO into `packet`. Caller must have
+// checked that the FIFO is non-empty. Only ever called from the downlink slot.
+static uint8_t _pop_join_response(uint8_t *packet) {
+    mr_packet_t *jp = &queue_vars.joinresp_queue.packets[queue_vars.joinresp_queue.current];
+    memcpy(packet, jp->buffer, jp->length);
+    uint8_t len = jp->length;
+    queue_vars.joinresp_queue.current =
+        (queue_vars.joinresp_queue.current + 1) % MARI_JOIN_RESPONSE_QUEUE_SIZE;
+
+    // record asn_dl for attestation freshness: the downlink ASN when join response was sent
+    mr_packet_header_t *h = (mr_packet_header_t *)packet;
+    mr_assoc_gateway_set_attest_dl_asn(h->dst, mr_mac_get_asn());
+    return len;
+}
+
 // Build the join response packet (with msg3 if available) and add it to the FIFO.
+//
+// Called from two contexts: the MAC ISR (the finalize loop in the downlink
+// slot) and the main loop (mr_queue_set_edhoc_msg3, via IPC from the edge).
+// The `last` update is a read-modify-write, so concurrent pushes must not
+// interleave -- a corrupted index leaves current != last permanently, which
+// under the old strict-priority scheme starved the general downlink queue for
+// good. Guarded with a PRIMASK save/restore so it nests safely inside the ISR.
 static void _finalize_join_response(uint64_t node_id, uint8_t cell_id) {
+    uint32_t primask = __get_PRIMASK();
+    __disable_irq();
+
     uint8_t next_last = (queue_vars.joinresp_queue.last + 1) % MARI_JOIN_RESPONSE_QUEUE_SIZE;
     if (next_last == queue_vars.joinresp_queue.current) {
+        __set_PRIMASK(primask);
         return;  // FIFO full, drop (node will retry)
     }
 
@@ -292,8 +318,22 @@ static void _finalize_join_response(uint64_t node_id, uint8_t cell_id) {
             break;
         }
     }
-    jp->length                     = len;
+    jp->length = len;
+    __DMB();  // buffer contents must be visible before `last` publishes them
     queue_vars.joinresp_queue.last = next_last;
+
+    __set_PRIMASK(primask);
+}
+
+// Look up the uplink cell already assigned to a joined node (gateway side).
+static int16_t _gateway_find_uplink_cell_id(uint64_t node_id) {
+    schedule_t *schedule = mr_scheduler_get_active_schedule_ptr();
+    for (size_t i = 0; i < schedule->n_cells; i++) {
+        if (schedule->cells[i].type == SLOT_TYPE_UPLINK && schedule->cells[i].assigned_node_id == node_id) {
+            return (int16_t)i;
+        }
+    }
+    return -1;
 }
 
 void mr_queue_set_join_response(uint64_t node_id, uint8_t assigned_cell_id) {
@@ -339,6 +379,14 @@ void mr_queue_set_edhoc_msg1(uint8_t *data, uint8_t len) {
     edhoc_msg1_len = len;
 }
 
+// Re-queues a connect-reply retry after the original pending-response record was already consumed.
+static void _requeue_connect_reply_retry(uint64_t node_id) {
+    int16_t cell_id = _gateway_find_uplink_cell_id(node_id);
+    if (cell_id >= 0) {
+        _finalize_join_response(node_id, (uint8_t)cell_id);
+    }
+}
+
 void mr_queue_set_edhoc_msg3(uint64_t node_id, uint8_t *data, uint8_t len) {
     if (len > MARI_EDHOC_MAX_MSG_LEN) {
         len = MARI_EDHOC_MAX_MSG_LEN;
@@ -351,12 +399,17 @@ void mr_queue_set_edhoc_msg3(uint64_t node_id, uint8_t *data, uint8_t len) {
             memcpy(edhoc_msg3_entries[i].data, data, len);
             // Finalize the pending join response immediately so it is queued in the FIFO
             // before the next downlink slot fires.
+            bool found_pending = false;
             for (uint8_t pi = 0; pi < PENDING_JOINRESP_SIZE; pi++) {
                 if (pending_joinresp_pool[pi].valid && pending_joinresp_pool[pi].node_id == node_id) {
                     _finalize_join_response(pending_joinresp_pool[pi].node_id, pending_joinresp_pool[pi].cell_id);
                     pending_joinresp_pool[pi].valid = false;
+                    found_pending               = true;
                     break;
                 }
+            }
+            if (!found_pending) {
+                _requeue_connect_reply_retry(node_id);
             }
             return;
         }
@@ -365,12 +418,17 @@ void mr_queue_set_edhoc_msg3(uint64_t node_id, uint8_t *data, uint8_t len) {
     edhoc_msg3_entries[0].node_id = node_id;
     edhoc_msg3_entries[0].len     = len;
     memcpy(edhoc_msg3_entries[0].data, data, len);
+    bool found_pending = false;
     for (uint8_t pi = 0; pi < PENDING_JOINRESP_SIZE; pi++) {
         if (pending_joinresp_pool[pi].valid && pending_joinresp_pool[pi].node_id == node_id) {
             _finalize_join_response(pending_joinresp_pool[pi].node_id, pending_joinresp_pool[pi].cell_id);
             pending_joinresp_pool[pi].valid = false;
+            found_pending               = true;
             break;
         }
+    }
+    if (!found_pending) {
+        _requeue_connect_reply_retry(node_id);
     }
 }
 

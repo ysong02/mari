@@ -129,4 +129,7 @@ void mr_radio_get_rx_packet(uint8_t *packet, uint8_t *length);
 void mr_radio_tx_prepare(const uint8_t *tx_buffer, uint8_t length);
 void mr_radio_tx_dispatch(void);
 
+/// Number of RX completions that failed the CRC check. Safe to call from the main loop.
+uint32_t mr_radio_get_crc_error_count(void);
+
 #endif  // __MR_RADIO_H

@@ -42,6 +42,27 @@
 #define MARI_REBOOT_PAYLOAD_TAG 0x52
 #define MARI_EDHOC_MAX_MSG_LEN  150
 
+// Join/uplink tracing for CRAFT debugging. Several of these printf()s run in
+// MAC interrupt context, so set this to 0 for the 100-node timing runs -- at
+// that scale the blocking prints perturb the very TDMA behaviour being
+// measured. Users must include <stdio.h>.
+//
+// Gateway output goes to RTT on the nRF5340 *network* core, a separate target
+// from both the node and the gateway app core.
+#define CRAFT_DIAG 1
+
+#if CRAFT_DIAG
+#define CRAFT_DIAG_PRINTF(...) printf(__VA_ARGS__)
+#else
+#define CRAFT_DIAG_PRINTF(...) ((void)0)
+#endif
+
+// 64-bit ids print as two 32-bit halves: the gateway projects set
+// linker_printf_fmt_level="int", where %llX formats wrong and misaligns the
+// varargs that follow it.
+#define CRAFT_DIAG_ID_HI(id) ((unsigned)((uint64_t)(id) >> 32))
+#define CRAFT_DIAG_ID_LO(id) ((unsigned)((uint64_t)(id) & 0xFFFFFFFFu))
+
 //=========================== types ============================================
 
 // -------- types sent over the air --------

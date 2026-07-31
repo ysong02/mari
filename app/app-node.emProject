@@ -4,13 +4,11 @@
     <configuration
       Name="Common"
       c_preprocessor_definitions="USE_CRYPTOCELL"
-      linker_additional_files="C:/Users/yusong/Downloads/lakers/target/thumbv7em-none-eabihf/release/liblakers_c.a"
       project_dependencies="00crypto_sha256(crypto);00crypto_ed25519(crypto);01mari(01mari);00drv_mr_timer_hf(00drv)"
       project_directory="03app_node"
       project_type="Executable" />
     <configuration
-      Name="Debug"
-      linker_additional_files="C:/Users/yusong/Downloads/lakers/target/thumbv7em-none-eabihf/release/liblakers_c.a" />
+      Name="Debug" />
     <folder Name="Setup">
       <file file_name="$(ProjectDir)/../../nRF/Setup/$(Target)_flash_placement.xml" />
       <file file_name="$(ProjectDir)/../../nRF/Setup/$(Target)_MemoryMap.xml">
@@ -28,6 +26,7 @@
       <file file_name="main.c" />
       <file file_name="attestation.c" />
       <file file_name="attestation.h" />
+      <file file_name="craft_node_keys.h" />
     </folder>
     <folder Name="System">
       <file file_name="$(ProjectDir)/../../nRF/System/$(Target)_system_init.c" />

@@ -34,19 +34,17 @@
 
 //=========================== defines =========================================
 
-#define MAURA_APP_NET_CONFIG_START_ADDRESS (0x0103f800)
-#define MAURA_APP_CONFIG_MAGIC_VALUE       (0x5753524D)  // "SWRM"
-
 #define MAURA_APP_TIMER_DEV 1
 
+// The reboot command is an unacknowledged broadcast: a node that misses it is
+// left running while the gateway has already dropped it. Send several copies
+// (one per downlink slot, ~22 downlink slots per slotframe) to make that
+// unlikely, and only wipe the association table once they have gone out.
+#define REBOOT_BROADCAST_COPIES 5
+
 typedef struct {
-    mr_event_t      mari_event;
-    mr_event_data_t mari_event_data;
-    bool            mari_event_ready;
-    bool            uart_to_radio_packet_ready;
-    bool            to_uart_gateway_loop_ready;
-    uint32_t        tx_count;
-    uint32_t        rx_count;
+    bool uart_to_radio_packet_ready;
+    bool to_uart_gateway_loop_ready;
 } gateway_vars_t;
 
 typedef struct {
@@ -54,18 +52,52 @@ typedef struct {
     uint64_t node_id;
     uint8_t  data[MARI_EDHOC_MAX_MSG_LEN];
     uint8_t  len;
-} edhoc_msg1_pending_t;
+} edhoc_pending_t;
 
-typedef struct __attribute__((packed)) {
-    uint32_t magic;
-    uint32_t has_net_id;
-    uint32_t net_id;
-} maura_app_config_t;
+// MARI_NEW_PACKET (status packets), MARI_KEEPALIVE, MARI_NODE_JOINED and
+// MARI_NODE_LEFT all land here. MSG1 and the uplink attest tag are pulled out
+// before this point into their own dedicated slots (see _mari_event_callback)
+// -- both used to share this buffer too, and both were found to be silently
+// lost when a second event arrived before the main loop drained the first.
+// A single slot has that failure mode by construction for ANY event type it
+// carries; a ring buffer removes the whole class of bug instead of requiring
+// a new dedicated slot every time a different event type turns out to matter
+// (as happened for MARI_NODE_LEFT: its loss under this exact race is the
+// leading theory for why a node can be silently deassigned by the gateway's
+// RX timeout with no visible cause on the edge -- see CRAFT_DIAG note below).
+#define EVENT_RING_SIZE 4
+
+typedef struct {
+    mr_event_t      event;
+    mr_event_data_t event_data;
+} gw_event_t;
 
 //=========================== variables =======================================
 
-static gateway_vars_t       _app_vars        = {0};
-static edhoc_msg1_pending_t _edhoc_msg1_pend = {0};
+static gateway_vars_t   _app_vars        = {0};
+static edhoc_pending_t  _edhoc_msg1_pend = {0};
+
+// Uplink EDHOC (the attest tag) needs its own slot for the same reason msg1
+// does -- see the comment in _mari_event_callback().
+static edhoc_pending_t _edhoc_uplink_pend = {0};
+
+// Single-producer (MAC/IRQ context, via _mari_event_callback), single-consumer
+// (main loop) ring. Lock-free: producer only ever writes head, consumer only
+// ever writes tail: no critical section needed, just ordering barriers.
+static gw_event_t       _event_ring[EVENT_RING_SIZE];
+static volatile uint8_t _event_ring_head = 0;
+static volatile uint8_t _event_ring_tail = 0;
+
+// Count of events dropped because the ring was full (not "single slot
+// overwritten" any more -- now genuinely means the main loop fell behind by
+// more than EVENT_RING_SIZE events, which should be rare).
+static volatile uint32_t _dropped_events = 0;
+
+// ASN at which the post-reboot association wipe is due (0 = nothing pending),
+// and the ASN the reboot command was issued at (nodes heard from after it have
+// already rejoined and must survive the wipe).
+static uint64_t _reboot_cleanup_asn = 0;
+static uint64_t _reboot_issued_asn  = 0;
 
 extern schedule_t schedule_tiny, schedule_medium, schedule_big, schedule_huge;
 static schedule_t *schedule_app = &schedule_huge;
@@ -76,15 +108,48 @@ static uint8_t _ipc_tx_buf[UINT8_MAX];
 
 static void _mari_event_callback(mr_event_t event, mr_event_data_t event_data) {
     if (event == MARI_EDHOC_MSG2) {
+        // printf("[GW] connect request (MSG2 raw event) from 0x%016llX, %u B\n",
+        //        (unsigned long long)event_data.data.edhoc.node_id, (unsigned)event_data.data.edhoc.len);
         _edhoc_msg1_pend.node_id = event_data.data.edhoc.node_id;
         _edhoc_msg1_pend.len     = event_data.data.edhoc.len;
         memcpy(_edhoc_msg1_pend.data, event_data.data.edhoc.data, event_data.data.edhoc.len);
         _edhoc_msg1_pend.ready = true;
         return;
     }
-    _app_vars.mari_event = event;
-    memcpy(&_app_vars.mari_event_data, &event_data, sizeof(mr_event_data_t));
-    _app_vars.mari_event_ready = true;
+
+    // The uplink attest tag arrives as a plain MARI_NEW_PACKET, so it used to
+    // share the single-slot buffer below with every status packet, keepalive
+    // and NODE_JOINED. Anything arriving before the main loop drains that slot
+    // destroys whatever was in it, and the main loop can stall for milliseconds
+    // inside _ipc_send_to_app()'s spin-wait. msg1 already has its own slot for
+    // exactly this reason; the tag needs the same treatment.
+    if (event == MARI_NEW_PACKET) {
+        const mari_packet_t *p = &event_data.data.new_packet;
+        if (p->payload_len >= 2 && p->payload[0] == MARI_EDHOC_PAYLOAD_TAG) {
+            uint8_t elen = p->payload[1];
+            if (elen > 0 && elen <= MARI_EDHOC_MAX_MSG_LEN &&
+                (uint8_t)(2u + elen) <= p->payload_len) {
+                _edhoc_uplink_pend.node_id = p->header->src;
+                _edhoc_uplink_pend.len     = elen;
+                memcpy(_edhoc_uplink_pend.data, p->payload + 2, elen);
+                _edhoc_uplink_pend.ready = true;
+                return;
+            }
+            CRAFT_DIAG_PRINTF("[DIAG-GW] malformed uplink EDHOC: elen=%u payload_len=%u\n",
+                              (unsigned)elen, (unsigned)p->payload_len);
+        }
+    }
+
+    uint8_t head      = _event_ring_head;
+    uint8_t next_head = (uint8_t)((head + 1) % EVENT_RING_SIZE);
+    if (next_head == _event_ring_tail) {
+        _dropped_events++;  // ring full -- main loop hasn't caught up
+        return;
+    }
+    _event_ring[head].event      = event;
+    _event_ring[head].event_data = event_data;
+    __DMB();  // event contents must be visible before head publishes them
+    _event_ring_head = next_head;
 }
 
 static void _to_uart_gateway_loop(void) {
@@ -111,6 +176,8 @@ static void _init_ipc(void) {
 }
 
 int main(void) {
+    printf("Hello mari gateway net core\n");
+
     mr_timer_hf_init(MAURA_APP_TIMER_DEV);
     _init_ipc();
 
@@ -123,11 +190,21 @@ int main(void) {
     while (1) {
         __WFE();
 
-        if (_app_vars.mari_event_ready) {
-            _app_vars.mari_event_ready = false;
+        // Post-reboot wipe, deferred until the broadcast copies have gone out.
+        // Falls through to mari_event_loop() below, which recomputes the bloom
+        // filter that mr_assoc_gateway_remove_all_nodes() just marked dirty.
+        if (_reboot_cleanup_asn != 0 && mr_mac_get_asn() >= _reboot_cleanup_asn) {
+            _reboot_cleanup_asn = 0;
+            CRAFT_DIAG_PRINTF("[DIAG-GW] reboot cleanup: wiping association table\n");
+            mr_assoc_gateway_remove_all_nodes(_reboot_issued_asn);
+            mr_queue_gateway_reset_edhoc_state();
+        }
 
-            mr_event_t      event      = _app_vars.mari_event;
-            mr_event_data_t event_data = _app_vars.mari_event_data;
+        while (_event_ring_tail != _event_ring_head) {
+            mr_event_t      event      = _event_ring[_event_ring_tail].event;
+            mr_event_data_t event_data = _event_ring[_event_ring_tail].event_data;
+            __DMB();  // finish reading the slot before publishing tail (frees it for the producer)
+            _event_ring_tail = (uint8_t)((_event_ring_tail + 1) % EVENT_RING_SIZE);
 
             bool    send_to_uart = false;
             uint8_t send_len     = 0;
@@ -141,25 +218,9 @@ int main(void) {
                                                 event_data.data.new_packet.payload);
                     }
 
-                    // Uplink EDHOC: node sends msg3 (with EAD_3 containing COSE_Sign1 token)
-                    if (event_data.data.new_packet.payload_len >= 2 &&
-                        event_data.data.new_packet.payload[0] == MARI_EDHOC_PAYLOAD_TAG) {
-                        uint8_t edhoc_len = event_data.data.new_packet.payload[1];
-                        if (edhoc_len > 0 &&
-                            (uint8_t)(2u + edhoc_len) <= event_data.data.new_packet.payload_len) {
-                            uint64_t src = event_data.data.new_packet.header->src;
-                            uint8_t  pos = 0;
-                            _ipc_tx_buf[pos++] = MARI_EDGE_EDHOC;
-                            _ipc_tx_buf[pos++] = MARI_EDHOC_SUBTYPE_MSG3;  // MSG3 in new design
-                            memcpy(_ipc_tx_buf + pos, &src, sizeof(uint64_t));
-                            pos += sizeof(uint64_t);
-                            memcpy(_ipc_tx_buf + pos,
-                                   event_data.data.new_packet.payload + 2, edhoc_len);
-                            pos += edhoc_len;
-                            send_to_uart = true;
-                            send_len     = pos;
-                        break;
-                    }
+                    // Uplink EDHOC (attest tag) is intercepted in
+                    // _mari_event_callback() and drained from its own slot
+                    // below -- it never reaches this switch.
 
                     send_len       = event_data.data.new_packet.len + 1;
                     _ipc_tx_buf[0] = MARI_EDGE_DATA;
@@ -175,6 +236,9 @@ int main(void) {
                     send_to_uart = true;
                     break;
                 case MARI_NODE_JOINED:
+                    CRAFT_DIAG_PRINTF("[DIAG-GW] NODE_JOINED 0x%08X%08X\n",
+                                      CRAFT_DIAG_ID_HI(event_data.data.node_info.node_id),
+                                      CRAFT_DIAG_ID_LO(event_data.data.node_info.node_id));
                     metrics_add_node(event_data.data.node_info.node_id);
                     send_len       = 1 + sizeof(uint64_t);
                     _ipc_tx_buf[0] = MARI_EDGE_NODE_JOINED;
@@ -182,29 +246,22 @@ int main(void) {
                     send_to_uart = true;
                     break;
                 case MARI_NODE_LEFT:
+                    CRAFT_DIAG_PRINTF("[DIAG-GW] NODE_LEFT 0x%08X%08X tag=%d\n",
+                                      CRAFT_DIAG_ID_HI(event_data.data.node_info.node_id),
+                                      CRAFT_DIAG_ID_LO(event_data.data.node_info.node_id),
+                                      (int)event_data.tag);
                     metrics_clear_node(event_data.data.node_info.node_id);
-                    send_len       = 1 + sizeof(uint64_t);
+                    // Reason tag appended after node_id -- without it the edge
+                    // can see THAT a node left but never WHY (RX timeout vs.
+                    // bloom-filter miss vs. attestation-failure kick), which
+                    // otherwise only shows up in a gateway RTT session that
+                    // itself perturbs the UART link being diagnosed. See
+                    // mr_event_tag_t in models.h for the value meanings.
+                    send_len       = 1 + sizeof(uint64_t) + 1;
                     _ipc_tx_buf[0] = MARI_EDGE_NODE_LEFT;
                     memcpy(_ipc_tx_buf + 1, &event_data.data.node_info.node_id, sizeof(uint64_t));
+                    _ipc_tx_buf[1 + sizeof(uint64_t)] = (uint8_t)event_data.tag;
                     send_to_uart = true;
-                    break;
-                case MARI_EDHOC_MSG2:
-                {
-                    // Forward join-request EDHOC as MSG1 (node sent msg1, not msg2)
-                    uint64_t src  = event_data.data.edhoc.node_id;
-                    uint8_t  elen = event_data.data.edhoc.len;
-                    uint8_t  pos  = 0;
-                    _ipc_tx_buf[pos++] = MARI_EDGE_EDHOC;
-                    _ipc_tx_buf[pos++] = MARI_EDHOC_SUBTYPE_MSG1;  // MSG1 in new design
-                    memcpy(_ipc_tx_buf + pos, &src, sizeof(uint64_t));
-                    pos += sizeof(uint64_t);
-                    memcpy(_ipc_tx_buf + pos, event_data.data.edhoc.data, elen);
-                    pos += elen;
-                    send_to_uart = true;
-                    send_len     = pos;
-                    break;
-                }
-                case MARI_ERROR:
                     break;
                 default:
                     break;
@@ -213,6 +270,23 @@ int main(void) {
             if (send_to_uart) {
                 _ipc_send_to_app(_ipc_tx_buf, send_len);
             }
+        }
+
+        // Drain the uplink attest tag (own slot, see _mari_event_callback)
+        if (_edhoc_uplink_pend.ready) {
+            _edhoc_uplink_pend.ready = false;
+            uint64_t src  = _edhoc_uplink_pend.node_id;
+            uint8_t  elen = _edhoc_uplink_pend.len;
+            uint8_t  pos  = 0;
+            _ipc_tx_buf[pos++] = MARI_EDGE_EDHOC;
+            _ipc_tx_buf[pos++] = MARI_EDHOC_SUBTYPE_MSG3;
+            memcpy(_ipc_tx_buf + pos, &src, sizeof(uint64_t));
+            pos += sizeof(uint64_t);
+            memcpy(_ipc_tx_buf + pos, _edhoc_uplink_pend.data, elen);
+            pos += elen;
+            CRAFT_DIAG_PRINTF("[DIAG-GW] uplink EDHOC(MSG3) from 0x%08X%08X %u B -> edge\n",
+                              CRAFT_DIAG_ID_HI(src), CRAFT_DIAG_ID_LO(src), (unsigned)elen);
+            _ipc_send_to_app(_ipc_tx_buf, pos);
         }
 
         // Drain pending msg1 from join request (stored separately to avoid MARI_NODE_JOINED race)
@@ -227,6 +301,8 @@ int main(void) {
             pos += sizeof(uint64_t);
             memcpy(_ipc_tx_buf + pos, _edhoc_msg1_pend.data, elen);
             pos += elen;
+            _ipc_send_to_app(_ipc_tx_buf, pos);
+        }
 
         if (_app_vars.uart_to_radio_packet_ready) {
             _app_vars.uart_to_radio_packet_ready = false;
@@ -242,9 +318,16 @@ int main(void) {
                 hdr->dst        = MARI_BROADCAST_ADDRESS;
                 hdr->src        = mr_device_id();
                 reboot_buf[sizeof(mr_packet_header_t)] = MARI_REBOOT_PAYLOAD_TAG;
-                mari_tx(reboot_buf, sizeof(reboot_buf));
-                mr_assoc_gateway_remove_all_nodes();
-                mr_queue_gateway_reset_edhoc_state();
+                for (uint8_t i = 0; i < REBOOT_BROADCAST_COPIES; i++) {
+                    mari_tx(reboot_buf, sizeof(reboot_buf));
+                }
+                // mari_tx() only enqueues; the copies leave one per downlink
+                // slot. Wiping the association table here would deassign every
+                // node before the command is even on air, so defer it by one
+                // full slotframe (>= REBOOT_BROADCAST_COPIES downlink slots).
+                _reboot_issued_asn  = mr_mac_get_asn();
+                _reboot_cleanup_asn = _reboot_issued_asn +
+                                      mr_scheduler_get_active_schedule_slot_count();
                 continue;
             }
 
@@ -293,6 +376,17 @@ int main(void) {
 
         if (_app_vars.to_uart_gateway_loop_ready) {
             _app_vars.to_uart_gateway_loop_ready = false;
+#if CRAFT_DIAG
+            // Report only on change: once per slotframe would be far too noisy.
+            {
+                static uint32_t last_reported_drops = 0;
+                if (_dropped_events != last_reported_drops) {
+                    last_reported_drops = _dropped_events;
+                    CRAFT_DIAG_PRINTF("[DIAG-GW] events dropped, ring full (depth %u): %u\n",
+                                      (unsigned)EVENT_RING_SIZE, (unsigned)last_reported_drops);
+                }
+            }
+#endif
             _ipc_tx_buf[0] = MARI_EDGE_GATEWAY_INFO;
             size_t len     = mr_build_uart_packet_gateway_info(_ipc_tx_buf + 1);
             _ipc_send_to_app(_ipc_tx_buf, 1 + (uint8_t)len);

@@ -58,6 +58,7 @@ typedef struct {
     radio_ts_packet_t end_pac_cb;       ///< Function pointer, stores the callback to capture the end of the packet.
     uint8_t           state;            ///< Internal state of the radio
     mr_radio_mode_t   mode;             ///< PHY protocol used by the radio (BLE, IEEE 802.15.4)
+    uint32_t          crc_error_count;  ///< Number of RX completions that failed the CRC check
 } radio_vars_t;
 
 //=========================== variables ========================================
@@ -258,6 +259,10 @@ void mr_radio_get_rx_packet(uint8_t *packet, uint8_t *length) {
     radio_vars.pending_rx_read = false;
 }
 
+uint32_t mr_radio_get_crc_error_count(void) {
+    return radio_vars.crc_error_count;
+}
+
 //--------------------------- send and receive --------------------------------
 
 // TODO: split into mr_radio_rx_prepare and mr_radio_rx_dispatch
@@ -339,7 +344,8 @@ void RADIO_IRQHandler(void) {
         if (radio_vars.state == (RADIO_STATE_BUSY | RADIO_STATE_RX)) {
             // if rx, check the CRC
             if (NRF_RADIO->CRCSTATUS != RADIO_CRCSTATUS_CRCSTATUS_CRCOk) {
-                puts("Invalid CRC");
+                // Count only; printing here would block in interrupt context.
+                radio_vars.crc_error_count++;
             } else {
                 if (radio_vars.end_pac_cb) {
                     radio_vars.pending_rx_read = true;

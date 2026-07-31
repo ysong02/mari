@@ -63,17 +63,12 @@ mr_gpio_t led3 = { .port = 0, .pin = 31 };
 #define MARI_BACKOFF_N_MIN 4
 #define MARI_BACKOFF_N_MAX 6
 
-#define MARI_JOIN_TIMEOUT_SINCE_SYNCED (1000 * 1000 * 5)  // 5 seconds. after this time, go back to scanning. NOTE: have it be based on slotframe size?
+// Must stay above MARI_JOINING_STATE_TIMEOUT below.
+#define MARI_JOIN_TIMEOUT_SINCE_SYNCED (1000 * 1000 * 20)  // 20 seconds
 
-// temporary for attestation test
-// #define MARI_ATTEST_NOT_JOIN (1000 * 1000 * 10)
-#define MARI_ATTEST_TIMEOUT_SLOTFRAMES 50
-
-// after this amount of time, consider that a join request failed (very likely due to a collision during the shared uplink slot)
-// currently set to 2 slot durations -- enough when the schedule always have a shared-uplink followed by a downlink,
-// and the gateway prioritizes join responses over all other downstream packets
-// #define MARI_JOINING_STATE_TIMEOUT ((MARI_WHOLE_SLOT_DURATION * (2 - 1)) + (MARI_WHOLE_SLOT_DURATION / 2))  // apply a half-slot duration just so that the timeout happens before the slot boundary
-#define MARI_JOINING_STATE_TIMEOUT (MARI_WHOLE_SLOT_DURATION * 30)  // extended to allow UART roundtrip (~15 ms) + next D slot gap (~10 ms) before node retries join
+// How long the node waits for a join response before retrying. Must exceed
+// mari_edge's connect-reply round trip (live MQTT hop to the verifier).
+#define MARI_JOINING_STATE_TIMEOUT (MARI_WHOLE_SLOT_DURATION * 4000)
 
 typedef struct {
     mr_assoc_state_t state;
@@ -93,12 +88,7 @@ typedef struct {
 //=========================== variables =======================================
 
 assoc_vars_t assoc_vars = { 0 };
-// for attestation
-// static bool is_attesting = false;
-// temporary for attestation test
-// static uint32_t rejoin_not_before_ts = 0;
 //=========================== prototypes ======================================
-// for attestation, to add asn_dl in gateway
 static cell_t *mr_assoc_gateway_find_cell_by_node(uint64_t node_id);
 
 uint8_t mr_assoc_node_compute_backoff_random_time(uint8_t backoff_n);
@@ -176,12 +166,6 @@ uint16_t mr_assoc_get_network_id(void) {
 // ------------ node functions ------------
 
 void mr_assoc_node_handle_synced(void) {
-    // temporary for attestation test
-    // uint32_t now = mr_timer_hf_now(MARI_TIMER_DEV);
-    // if (rejoin_not_before_ts && now < rejoin_not_before_ts) {
-    //     // attestation failed, stay synced but do not queue join
-    //     return;
-    // }
     mr_assoc_set_state(JOIN_STATE_SYNCED);
     mr_assoc_node_init_backoff();  // ensure we start the joining procedure already with a backoff
     mr_queue_set_join_request(mr_mac_get_synced_gateway());
@@ -292,9 +276,7 @@ uint8_t mr_assoc_node_compute_backoff_random_time(uint8_t backoff_n) {
     uint8_t random_number;
     mr_rng_read_u8_fast(&random_number);
 
-    // finally, make sure random number is in the interval [0, max]
-    // using modulo does not give perfect uniformity,
-    // but it is much faster than an exhaustive search, and good enough for our purpose
+    // modulo into [0, max]: not perfectly uniform, but fast and good enough here.
     return random_number % (max + 1);
 }
 
@@ -326,7 +308,6 @@ void mr_assoc_node_keep_gateway_alive(uint64_t asn) {
 void mr_assoc_node_handle_pending_disconnect(void) {
     mr_assoc_set_state(JOIN_STATE_IDLE);
     mr_scheduler_node_deassign_myself_from_schedule();
-    // rejoin_not_before_ts = MARI_ATTEST_NOT_JOIN;
     mr_event_data_t event_data = {
         .data.gateway_info.gateway_id = mr_mac_get_synced_gateway(),
         .tag                          = assoc_vars.is_pending_disconnect
@@ -353,18 +334,6 @@ bool mr_assoc_node_matches_network_id(uint16_t network_id) {
     return assoc_vars.network_id == network_id;
 }
 
-// for attestation
-// void mr_assoc_set_attesting(bool required) {
-//     is_attesting = required;
-// }
-
-// bool mr_assoc_is_attesting(void) {
-//     return is_attesting;
-// }
-
-// void mr_assoc_set_attestation_ok(void) {
-//     is_attesting = false;
-// }
 // ------------ gateway functions ---------
 
 bool mr_assoc_gateway_node_is_joined(uint64_t node_id) {
@@ -446,6 +415,12 @@ void mr_assoc_gateway_remove_node(uint64_t node_id) {
     c->assigned_node_id  = 0;
     c->last_received_asn = 0;
     c->attest_asn_dl     = 0;
+    // The beacon's bloom filter is the node's only way to learn it was dropped
+    // (mr_assoc_handle_beacon). Without this, the gateway keeps advertising a
+    // stale filter that still contains the node, the node keeps refreshing its
+    // own leave timer from it, and its uplinks are silently discarded forever
+    // by the !from_joined_node check in mr_handle_packet.
+    mr_bloom_gateway_set_dirty();
     mr_event_data_t event_data = {
         .data.node_info.node_id = node_id,
         .tag                    = MARI_ATTESTATION_FAILED
@@ -453,17 +428,33 @@ void mr_assoc_gateway_remove_node(uint64_t node_id) {
     assoc_vars.mari_event_callback(MARI_NODE_LEFT, event_data);
 }
 
-void mr_assoc_gateway_remove_all_nodes(void) {
+void mr_assoc_gateway_remove_all_nodes(uint64_t keep_if_heard_after_asn) {
     schedule_t *s = mr_scheduler_get_active_schedule_ptr();
     for (size_t i = 0; i < s->n_cells; i++) {
         cell_t *c = &s->cells[i];
-        if (c->type == SLOT_TYPE_UPLINK && c->assigned_node_id != 0) {
-            mr_scheduler_gateway_decrease_nodes_counter();
-            c->assigned_node_id  = 0;
-            c->last_received_asn = 0;
-            c->attest_asn_dl     = 0;
+        if (c->type != SLOT_TYPE_UPLINK || c->assigned_node_id == 0) {
+            continue;
         }
+        // A node that has already been heard from since the reboot command was
+        // issued has rebooted and rejoined -- wiping it here would deassign a
+        // node that is mid-handshake, and it would then transmit into a cell
+        // the gateway no longer associates with it. Reboot broadcast latency
+        // (~1 slotframe) and node rejoin latency (~120-380ms) overlap, so this
+        // is a live race, not a theoretical one.
+        if (c->last_received_asn > keep_if_heard_after_asn) {
+            continue;
+        }
+        mr_scheduler_gateway_decrease_nodes_counter();
+        c->assigned_node_id  = 0;
+        c->last_received_asn = 0;
+        c->attest_asn_dl     = 0;
     }
+    // Unlike mr_assoc_gateway_clear_old_nodes(), this path fires no
+    // MARI_NODE_LEFT event, so nothing else marks the bloom filter dirty.
+    // A node that missed the (unacked, broadcast) reboot would otherwise stay
+    // a permanent zombie: still "joined" per the stale filter, but with no
+    // uplink cell at the gateway. See mr_assoc_gateway_remove_node().
+    mr_bloom_gateway_set_dirty();
 }
 
 // ------------ packet handlers -------

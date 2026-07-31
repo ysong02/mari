@@ -186,13 +186,11 @@ int main(void) {
                 mr_hdlc_state_t hdlc_state = mr_hdlc_rx_byte(_app_vars.uart_buffer[i]);
                 if (hdlc_state == MR_HDLC_STATE_READY) {
                     // decode the frame and send it to the radio
-                    // decode the frame
                     size_t msg_len                    = mr_hdlc_decode((uint8_t *)(void *)ipc_shared_data.uart_to_radio);
                     ipc_shared_data.uart_to_radio_len = msg_len;
                     if (msg_len) {
                         NRF_IPC_S->TASKS_SEND[IPC_CHAN_UART_TO_RADIO] = 1;
                     }
-                    // we can break since we assume that the python code never sends two frames too fast in a row
                     break;
                 } else if (hdlc_state == MR_HDLC_STATE_ERROR) {
                     break;

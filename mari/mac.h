@@ -53,8 +53,8 @@
 
 #define MARI_BG_SCAN_DURATION (MARI_WHOLE_SLOT_DURATION - (MARI_END_GUARD_TIME * 2))
 
-#define MARI_MAX_SLOTFRAMES_NO_RX_LEAVE (5)  // how many slotframes to wait before leaving the network if nothing is received
-// #define MARI_MAX_SLOTFRAMES_NO_RX_LEAVE (50)  // how many slotframes to wait before leaving the network if nothing is received
+// Must exceed mari_edge's connect-reply round trip (MQTT hop to the verifier).
+#define MARI_MAX_SLOTFRAMES_NO_RX_LEAVE (50)
 
 /* Duration of intra-slot sections */
 typedef struct {
