@@ -37,8 +37,7 @@ int main(void) {
 
     printf("Device of type %c and id %llx is using schedule %d\n\n", node_type, mr_device_id(), schedule.id);
 
-    // loop n_slotframes*n_cells times and make the scheduler tick
-    // also, try to assign and deassign uplink cell at specific slotframes
+    // Tick the scheduler n_slotframes*n_cells times, assigning/deassigning the uplink cell partway through.
     size_t n_slotframes = 4;
     // uint64_t asn = (1ULL << 48) + 123456789; // use a large number to test scheduler tick duration
     uint64_t asn = 0;

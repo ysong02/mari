@@ -134,9 +134,7 @@ int16_t mr_scheduler_gateway_assign_next_available_uplink_cell(uint64_t node_id,
             _schedule_vars.num_assigned_uplink_nodes++;
             return i;
         } else if (cell->type == SLOT_TYPE_UPLINK && cell->assigned_node_id == node_id) {
-            // the node re-connected before the gateway could detect it was gone,
-            // probably because of a collision on the join response (donwlink)
-            // so we can just keep the same cell_id, but we still need to update the last_received_asn
+            // Node re-connected before the gateway noticed it was gone (e.g. join-response collision) -- keep the cell, just refresh last_received_asn.
             cell->last_received_asn = asn;
             return i;
         }

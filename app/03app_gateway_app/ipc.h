@@ -40,14 +40,14 @@ typedef struct __attribute__((packed)) {
 } ipc_shared_data_t;
 
 /**
- * @brief Lock the mutex, blocks until the mutex is locked
+ * @brief Lock the mutex (blocks until acquired)
  */
 static inline void mutex_lock(void) {
     while (NRF_MUTEX->MUTEX[0]) {}
 }
 
 /**
- * @brief Unlock the mutex, has no effect if the mutex is already unlocked
+ * @brief Unlock the mutex (no-op if already unlocked)
  */
 static inline void mutex_unlock(void) {
     NRF_MUTEX->MUTEX[0] = 0;

@@ -104,8 +104,7 @@ static void _release_network_core(void) {
 
     NRF_RESET_S->NETWORK.FORCEOFF = (RESET_NETWORK_FORCEOFF_FORCEOFF_Release << RESET_NETWORK_FORCEOFF_FORCEOFF_Pos);
 
-    // add an extra delay to ensure the network core is released
-    // NOTE: this is very hacky, but since this only happens once, we don't want to consume another timer
+    // Extra delay so the network core has time to release (hacky, but one-shot).
     for (uint32_t i = 0; i < 500000; i++) {
         __NOP();
     }
@@ -225,8 +224,7 @@ void IPC_IRQHandler(void) {
     if (NRF_IPC_S->EVENTS_RECEIVE[IPC_CHAN_RADIO_TO_UART]) {
         NRF_IPC_S->EVENTS_RECEIVE[IPC_CHAN_RADIO_TO_UART] = 0;
 
-        // Copy out the data into the TX queue, then immediately free the shared buffer
-        // so the NET core can write the next message without waiting.
+        // Copy into the TX queue, then free the shared buffer so NET core isn't blocked.
         _tx_queue_enqueue((const uint8_t *)ipc_shared_data.radio_to_uart, ipc_shared_data.radio_to_uart_len);
         ipc_shared_data.radio_to_uart_free = true;
     }

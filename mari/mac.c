@@ -14,6 +14,7 @@
 #include <stdint.h>
 #include <stdbool.h>
 #include <string.h>
+#include <stdio.h>
 
 #include "mari.h"
 #include "mac.h"
@@ -90,8 +91,7 @@ typedef struct {
     bool is_bg_scanning;           ///< Whether the node is scanning for gateways in the background
     bool bg_scan_sleep_next_slot;  ///< Whether the next slot is a sleep slot
 
-    ///< This timestamp keeps track of a full handover scan, that is, a scan that
-    ///< Potentially spans multiple background scans (the bg scans are typically very short)
+    ///< Start of a full handover scan, which can span multiple (short) background scans.
     uint32_t full_bg_scan_started_ts;
     uint32_t full_bg_scan_expected_end_ts;  ///< Timestamp of the expected end of the full handover scan
 
@@ -598,8 +598,13 @@ static void activity_ri4(uint32_t ts) {
         return;
     }
 
+    // Skip drift correction for a join response the node will discard anyway (received outside JOIN_STATE_JOINING) -- not a trustworthy timing reference.
+    bool is_stale_join_response = header->type == MARI_PACKET_JOIN_RESPONSE &&
+                                   mr_assoc_get_state() != JOIN_STATE_JOINING;
+
     // if (mari_get_node_type() == MARI_NODE && mr_assoc_is_joined() && header->src == mac_vars.synced_gateway) {
-    if (mari_get_node_type() == MARI_NODE && mr_mac_node_is_synced() && header->src == mac_vars.synced_gateway) {
+    if (mari_get_node_type() == MARI_NODE && mr_mac_node_is_synced() &&
+        header->src == mac_vars.synced_gateway && !is_stale_join_response) {
         // only fix drift if the packet comes from the gateway we are synced to
         // NOTE: this should ideally be done at ri3 (when the packet starts), but we don't have the id there.
         //       could use use the physical BLE address for that?
@@ -645,6 +650,7 @@ static void fix_drift(uint32_t ts) {
     } else {
         // drift is too high, need to re-sync
         // FIXME: use `mr_assoc_node_handle_immediate_disconnect` instead
+        CRAFT_DIAG_PRINTF("[DIAG-NODE] fix_drift: clock_drift=%ld (TOO HIGH -- resync)\n", (long)clock_drift);
         mr_event_data_t event_data = { .data.gateway_info.gateway_id = mac_vars.synced_gateway, .tag = MARI_OUT_OF_SYNC };
         mac_vars.mari_event_callback(MARI_DISCONNECTED, event_data);
         mr_assoc_set_state(JOIN_STATE_IDLE);
@@ -750,8 +756,7 @@ static bool sync_to_gateway(uint32_t now_ts, mr_channel_info_t *selected_gateway
     mac_vars.synced_network_id = selected_gateway->beacon.network_id;
     mac_vars.synced_ts         = now_ts;
 
-    // the selected gateway may have been scanned a few slot_durations ago, so we need to account for that difference
-    // NOTE: this assumes that the slot duration is the same for gateways and nodes
+    // Account for the gateway having been scanned a few slots ago (assumes gateway and node share slot duration).
     uint32_t time_since_beacon      = now_ts - selected_gateway->timestamp;
     uint64_t asn_count_since_beacon = (time_since_beacon / slot_durations.whole_slot) + 1;  // +1 because we are inside the current slot
     uint64_t time_into_gateway_slot = time_since_beacon % slot_durations.whole_slot;

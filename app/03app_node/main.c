@@ -38,8 +38,8 @@
 
 // Must stay above the gateway's JOINRESP_WAIT_TIMEOUT_SLOTS (queue.c).
 #define CONNECT_REPLY_TIMEOUT_SLOTS 6000
-#define CRAFT_ATTEST_ACK_TAG        0xAC  // edge confirms attest receipt
-#define ATTEST_MAX_RETRIES          5     // quick retries within one session before a full rejoin
+// Fire-and-forget (matches SALSA-native): retry this many times (500ms apart), then give up without resetting.
+#define ATTEST_MAX_RETRIES          5
 
 #define DEFAULT_PAYLOAD_SIZE (MARI_PACKET_MAX_SIZE - (uint8_t)sizeof(mr_packet_header_t) - 2u)
 
@@ -56,9 +56,8 @@ typedef struct {
     bool            send_status_ready;
 
     bool     connect_started;    ///< connect request built and appended to join request
-    bool     attest_ready;       ///< attest tag ready to transmit
+    bool     attest_ready;       ///< attest tag ready to transmit (cleared once ATTEST_MAX_RETRIES is reached)
     bool     connect_completed;  ///< connect reply verified, k_ij derived, challenge stored
-    bool     attest_acked;       ///< edge confirmed attest receipt -- stop retransmitting
     uint8_t  attest_tx_count;    ///< number of times the attest tag has been transmitted (capped by ATTEST_MAX_RETRIES)
     uint64_t conn_asn_dl;        ///< ASN when join response arrived
 } node_vars_t;
@@ -71,6 +70,12 @@ typedef struct {
     uint8_t len;
 } connect_reply_pending_t;
 
+// Own slot like connect_reply_pending_t: a lost MARI_DISCONNECTED left the node thinking it was still connected after the MAC had already dropped back to scanning.
+typedef struct {
+    bool           ready;
+    mr_event_tag_t tag;
+} disconnect_pending_t;
+
 typedef struct __attribute__((packed)) {
     uint64_t marilib_timestamp;
     uint32_t rx_counter;
@@ -79,9 +84,10 @@ typedef struct __attribute__((packed)) {
 
 //=========================== variables =======================================
 
-static node_vars_t             _node_vars  = {0};
-static node_stats_t            _node_stats = {0};
-static connect_reply_pending_t _reply_pend = {0};
+static node_vars_t             _node_vars      = {0};
+static node_stats_t            _node_stats     = {0};
+static connect_reply_pending_t _reply_pend     = {0};
+static disconnect_pending_t    _disconnect_pend = {0};
 
 extern schedule_t schedule_minuscule, schedule_tiny, schedule_huge;
 static schedule_t *schedule_app = &schedule_huge;
@@ -101,14 +107,6 @@ static uint8_t _attest_tag[CRAFT_ATTEST_TAG_SIZE]    = { 0 };
 
 //=========================== private =========================================
 
-static void _print_hex(const char *label, const uint8_t *buf, uint8_t len) {
-    printf("[CRAFT] %s (%u B): ", label, (unsigned)len);
-    for (uint8_t i = 0; i < len; i++) {
-        printf("%02x", buf[i]);
-    }
-    printf("\n");
-}
-
 static void _led_blink_cb(void) {
     if (!mari_node_is_connected()) {
         board_set_led_mari(_node_vars.led_blink_state ? OFF : BLUE);
@@ -124,7 +122,6 @@ static void _reset_craft_state(void) {
     _node_vars.connect_started   = false;
     _node_vars.attest_ready      = false;
     _node_vars.connect_completed = false;
-    _node_vars.attest_acked      = false;
     _node_vars.attest_tx_count   = 0;
     _node_vars.conn_asn_dl       = 0;
     _reply_pend.ready            = false;
@@ -140,7 +137,6 @@ static void _reset_craft_state(void) {
  */
 static void _start_connect(void) {
     uint8_t len = craft_build_connect_request(_connect_request);
-    _print_hex("connect request", _connect_request, len);
     mr_queue_append_edhoc_to_join_request(_connect_request, len);
     _node_vars.connect_started = true;
 }
@@ -153,6 +149,11 @@ static void _mari_event_cb(mr_event_t event, mr_event_data_t event_data) {
         memcpy(_reply_pend.data, event_data.data.edhoc.data, len);
         _reply_pend.len   = len;
         _reply_pend.ready = true;
+        return;
+    }
+    if (event == MARI_DISCONNECTED) {
+        _disconnect_pend.tag   = event_data.tag;
+        _disconnect_pend.ready = true;
         return;
     }
     memcpy(&_node_vars.event, &event, sizeof(mr_event_t));
@@ -201,12 +202,8 @@ int main(void) {
                 {
                     mari_packet_t pkt = event_data.data.new_packet;
                     if (pkt.payload_len >= 1 && pkt.payload[0] == MARI_REBOOT_PAYLOAD_TAG) {
+                        printf("[CRAFT] RX reboot command -- resetting\n");
                         NVIC_SystemReset();
-                    } else if (pkt.payload_len >= 1 && pkt.payload[0] == CRAFT_ATTEST_ACK_TAG) {
-                        // Edge confirmed attest receipt -- stop retransmitting.
-                        printf("[CRAFT] attest acked after %u tx\n", (unsigned)_node_vars.attest_tx_count);
-                        _node_vars.attest_acked = true;
-                        _node_vars.attest_ready = false;
                     } else if (pkt.payload_len >= 2 && pkt.payload[0] == MARI_EDHOC_PAYLOAD_TAG) {
                         // connect reply delivered as downlink data packet (retry after join)
                         uint8_t len = pkt.payload[1];
@@ -232,20 +229,11 @@ int main(void) {
                 case MARI_CONNECTED:
                 {
                     uint64_t gw_id = event_data.data.gateway_info.gateway_id;
+                    printf("[CRAFT] RX join response -- connected to gateway 0x%08lX%08lX\n",
+                           (unsigned long)(gw_id >> 32), (unsigned long)(gw_id & 0xFFFFFFFF));
                     board_set_led_mari_gateway(gw_id);
                     board_set_led_mari(YELLOW);
                     _node_vars.conn_asn_dl = mr_mac_get_asn();
-                    break;
-                }
-                case MARI_DISCONNECTED:
-                {
-                    // tag: 1=handover 2=out_of_sync 5=peer_lost_timeout
-                    //      6=peer_lost_bloom 7=handover_failed
-                    printf("[CRAFT] disconnected (tag=%d)\n", (int)event_data.tag);
-                    board_set_led_mari(OFF);
-                    _reset_craft_state();
-                    // Build a fresh connect request for the next join attempt
-                    _start_connect();
                     break;
                 }
                 default:
@@ -253,10 +241,20 @@ int main(void) {
             }
         }
 
+        if (_disconnect_pend.ready) {
+            _disconnect_pend.ready = false;
+
+            // tag: 1=handover 2=out_of_sync 5=peer_lost_timeout
+            //      6=peer_lost_bloom 7=handover_failed
+            printf("[CRAFT] disconnected (tag=%d)\n", (int)_disconnect_pend.tag);
+            board_set_led_mari(OFF);
+            _reset_craft_state();
+            // Build a fresh connect request for the next join attempt
+            _start_connect();
+        }
+
         if (_reply_pend.ready) {
             _reply_pend.ready = false;
-
-            _print_hex("connect reply (raw, incl. challenge)", _reply_pend.data, _reply_pend.len);
 
             craft_status_t status = craft_process_connect_reply(
                 _reply_pend.data, _reply_pend.len, _pk_edge, _challenge, _k_ij);
@@ -266,20 +264,12 @@ int main(void) {
                 goto reply_done;
             }
 
-            printf("[CRAFT] sigma_edge verified OK\n");
-            _print_hex("pk_edge", _pk_edge, CRAFT_X25519_KEY_SIZE);
-            _print_hex("challenge", _challenge, CRAFT_CHALLENGE_SIZE);
-            _print_hex("k_ij", _k_ij, CRAFT_X25519_KEY_SIZE);
-
             craft_compute_attest_tag(_challenge, _attest_tag);
-            _print_hex("attest tag", _attest_tag, CRAFT_ATTEST_TAG_SIZE);
 
             _node_vars.attest_ready      = true;
             _node_vars.connect_completed = true;
-            _node_vars.attest_acked      = false;
             _node_vars.attest_tx_count   = 0;
             board_set_led_mari(GREEN);
-            printf("[CRAFT] attest tag ready\n");
 
             reply_done:;
         }
@@ -295,20 +285,20 @@ int main(void) {
                 }
             }
 
-            if (_node_vars.attest_ready && !_node_vars.attest_acked) {
+            if (_node_vars.attest_ready) {
                 uint8_t buf[2 + CRAFT_ATTEST_TAG_SIZE];
                 uint8_t pos   = 0;
                 buf[pos++]    = MARI_EDHOC_PAYLOAD_TAG;
                 buf[pos++]    = CRAFT_ATTEST_TAG_SIZE;
                 memcpy(buf + pos, _attest_tag, CRAFT_ATTEST_TAG_SIZE);
                 pos += CRAFT_ATTEST_TAG_SIZE;
-                if (_node_vars.attest_tx_count == 0) {
-                    _print_hex("sending attest tag (first tx)", _attest_tag, CRAFT_ATTEST_TAG_SIZE);
-                }
                 mari_node_tx_payload(buf, pos);
                 _node_vars.attest_tx_count++;
                 if (_node_vars.attest_tx_count >= ATTEST_MAX_RETRIES) {
-                    NVIC_SystemReset();
+                    printf("[CRAFT] attest tag never acked -- giving up after %u tries, staying connected\n",
+                           (unsigned)ATTEST_MAX_RETRIES);
+                    // Fire-and-forget like SALSA: give up and fall back to status packets, no reset either way.
+                    _node_vars.attest_ready = false;
                 }
             } else {
                 mari_node_tx_payload(_status_pkt, sizeof(_status_pkt));

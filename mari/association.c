@@ -66,8 +66,7 @@ mr_gpio_t led3 = { .port = 0, .pin = 31 };
 // Must stay above MARI_JOINING_STATE_TIMEOUT below.
 #define MARI_JOIN_TIMEOUT_SINCE_SYNCED (1000 * 1000 * 20)  // 20 seconds
 
-// How long the node waits for a join response before retrying. Must exceed
-// mari_edge's connect-reply round trip (live MQTT hop to the verifier).
+// Join-response wait before retrying; must exceed mari_edge's live MQTT round trip to the verifier.
 #define MARI_JOINING_STATE_TIMEOUT (MARI_WHOLE_SLOT_DURATION * 4000)
 
 typedef struct {
@@ -182,12 +181,15 @@ void mr_assoc_node_start_joining(void) {
 }
 
 void mr_assoc_node_handle_joined(uint64_t gateway_id) {
+    // Seed the keep-alive before flipping to JOINED: the MAC tick ISR can preempt
+    // this function, and should_leave() acting on "joined" with a stale keep-alive
+    // would wrongly disconnect (see mr_assoc_node_should_leave()).
+    assoc_vars.is_pending_disconnect = MARI_NONE;        // reset the pending disconnect flag
+    mr_assoc_node_keep_gateway_alive(mr_mac_get_asn());  // initialize the gateway's keep-alive
     mr_assoc_set_state(JOIN_STATE_JOINED);
     mr_queue_reset();  // clear the queue to avoid sending old packets
     mr_event_data_t event_data = { .data.gateway_info.gateway_id = gateway_id };
     assoc_vars.mari_event_callback(MARI_CONNECTED, event_data);
-    assoc_vars.is_pending_disconnect = MARI_NONE;        // reset the pending disconnect flag
-    mr_assoc_node_keep_gateway_alive(mr_mac_get_asn());  // initialize the gateway's keep-alive
     mr_assoc_node_reset_backoff();
 }
 
@@ -294,6 +296,8 @@ bool mr_assoc_node_should_leave(uint32_t asn) {
     bool gateway_is_lost = (asn - assoc_vars.last_received_from_gateway_asn) > mr_scheduler_get_active_schedule_slot_count() * MARI_MAX_SLOTFRAMES_NO_RX_LEAVE;
     if (gateway_is_lost) {
         // too long since last received from the gateway, consider it lost
+        CRAFT_DIAG_PRINTF("[DIAG-NODE] should_leave: asn=%lu last_rx_asn=%lu\n",
+                          (unsigned long)asn, (unsigned long)assoc_vars.last_received_from_gateway_asn);
         assoc_vars.is_pending_disconnect = MARI_PEER_LOST_TIMEOUT;
         return true;
     }
@@ -415,11 +419,7 @@ void mr_assoc_gateway_remove_node(uint64_t node_id) {
     c->assigned_node_id  = 0;
     c->last_received_asn = 0;
     c->attest_asn_dl     = 0;
-    // The beacon's bloom filter is the node's only way to learn it was dropped
-    // (mr_assoc_handle_beacon). Without this, the gateway keeps advertising a
-    // stale filter that still contains the node, the node keeps refreshing its
-    // own leave timer from it, and its uplinks are silently discarded forever
-    // by the !from_joined_node check in mr_handle_packet.
+    // Without this, the beacon's bloom filter (the node's only way to learn it was dropped) stays stale and the node never finds out.
     mr_bloom_gateway_set_dirty();
     mr_event_data_t event_data = {
         .data.node_info.node_id = node_id,
@@ -435,12 +435,7 @@ void mr_assoc_gateway_remove_all_nodes(uint64_t keep_if_heard_after_asn) {
         if (c->type != SLOT_TYPE_UPLINK || c->assigned_node_id == 0) {
             continue;
         }
-        // A node that has already been heard from since the reboot command was
-        // issued has rebooted and rejoined -- wiping it here would deassign a
-        // node that is mid-handshake, and it would then transmit into a cell
-        // the gateway no longer associates with it. Reboot broadcast latency
-        // (~1 slotframe) and node rejoin latency (~120-380ms) overlap, so this
-        // is a live race, not a theoretical one.
+        // Skip nodes already heard from since reboot was issued -- they've rejoined; wiping mid-handshake would strand them.
         if (c->last_received_asn > keep_if_heard_after_asn) {
             continue;
         }
@@ -449,11 +444,7 @@ void mr_assoc_gateway_remove_all_nodes(uint64_t keep_if_heard_after_asn) {
         c->last_received_asn = 0;
         c->attest_asn_dl     = 0;
     }
-    // Unlike mr_assoc_gateway_clear_old_nodes(), this path fires no
-    // MARI_NODE_LEFT event, so nothing else marks the bloom filter dirty.
-    // A node that missed the (unacked, broadcast) reboot would otherwise stay
-    // a permanent zombie: still "joined" per the stale filter, but with no
-    // uplink cell at the gateway. See mr_assoc_gateway_remove_node().
+    // Unlike mr_assoc_gateway_clear_old_nodes(), this path fires no MARI_NODE_LEFT, so mark the bloom dirty here directly.
     mr_bloom_gateway_set_dirty();
 }
 

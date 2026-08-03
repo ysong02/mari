@@ -34,15 +34,7 @@ bool              _scan_is_too_old(mr_gateway_scan_t scan, uint32_t ts_scan);
 
 //=========================== public ===========================================
 
-// This function is a bit more complicated than it needed to be, but by inserting the rssi reading
-// in a smart way, later it beacomes very easy and efficient to compute the average rssi.
-// It does a few things:
-// 1. If the gateway_id (beacon.src) is already in the scan list, update the rssi reading.
-// 2. Check for old rssi readings and remove them
-//   - meaning that the loop always goes through the whole list, but it's small, so it's fine.
-//   - and also, in most cases it will have to cycle through the whole list anyway, to find old readings to replace.
-// 3. Look for empty spots, in case the gateway_id is not yet in the list.
-// 4. Save the oldest reading, to be overwritten, in case there are no empty spots.
+// Update this gateway's rssi if already scanned; else take an empty spot, or overwrite the oldest reading.
 void mr_scan_add(mr_beacon_packet_header_t beacon, int8_t rssi, uint8_t channel, uint32_t ts_scan, uint64_t asn_scan) {
     uint64_t gateway_id        = beacon.src;
     bool     found             = false;
@@ -79,8 +71,7 @@ void mr_scan_add(mr_beacon_packet_header_t beacon, int8_t rssi, uint8_t channel,
             scan_vars.scans[empty_spot_idx].gateway_id = gateway_id;
             _save_rssi(empty_spot_idx, beacon, rssi, channel, ts_scan, asn_scan);
         } else {
-            // last case: didn't match the gateeway_id, and didn't find an empty slot,
-            // so overwrite the oldest reading
+            // no match and no empty slot: overwrite the oldest reading
             memset(&scan_vars.scans[ts_oldest_all_idx], 0, sizeof(mr_gateway_scan_t));
             scan_vars.scans[ts_oldest_all_idx].gateway_id = gateway_id;
             _save_rssi(ts_oldest_all_idx, beacon, rssi, channel, ts_scan, asn_scan);
@@ -88,9 +79,7 @@ void mr_scan_add(mr_beacon_packet_header_t beacon, int8_t rssi, uint8_t channel,
     }
 }
 
-// Compute the average rssi for each gateway, and return the highest one.
-// The documentation says that remaining capacity should also be taken into account,
-// but we will simply not add a gateway to the scan list if its capacity if full.
+// Return the gateway with the highest average rssi (full-capacity gateways are never added to the scan list).
 bool mr_scan_select(mr_channel_info_t *best_channel_info, uint32_t ts_scan_started, uint32_t ts_scan_ended) {
     int8_t best_gateway_idx = -1;
     // make sure best_channel_info is zeroed out

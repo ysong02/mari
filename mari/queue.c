@@ -134,13 +134,7 @@ uint8_t mr_queue_next_packet(slot_type_t slot_type, uint8_t *packet) {
                     pending_joinresp_pool[pi].valid = false;
                 }
             }
-            // Alternate between the JOIN_RESPONSE FIFO and the general queue.
-            // These used to be strict priority (FIFO first), which starved the
-            // general queue -- the path carrying the attest ack and the reboot
-            // broadcast -- for as long as join responses kept being produced.
-            // mari_edge's connect-reply retry loop produces one every 2s per
-            // node via _requeue_connect_reply_retry(), so that starvation was
-            // sustained, not transient.
+            // Alternate FIFO/general queue -- strict FIFO priority used to starve the general queue (attest ack, reboot) whenever retries kept producing join responses.
             bool joinresp_ready = queue_vars.joinresp_queue.current != queue_vars.joinresp_queue.last;
 
             if (joinresp_ready && !_downlink_prefer_general) {
@@ -284,14 +278,9 @@ static uint8_t _pop_join_response(uint8_t *packet) {
     return len;
 }
 
-// Build the join response packet (with msg3 if available) and add it to the FIFO.
-//
-// Called from two contexts: the MAC ISR (the finalize loop in the downlink
-// slot) and the main loop (mr_queue_set_edhoc_msg3, via IPC from the edge).
-// The `last` update is a read-modify-write, so concurrent pushes must not
-// interleave -- a corrupted index leaves current != last permanently, which
-// under the old strict-priority scheme starved the general downlink queue for
-// good. Guarded with a PRIMASK save/restore so it nests safely inside the ISR.
+// Build the join response (with msg3 if available) and push it to the FIFO.
+// Called from both the MAC ISR and the main loop, so the `last` read-modify-write
+// is guarded with a PRIMASK save/restore (nests safely inside the ISR).
 static void _finalize_join_response(uint64_t node_id, uint8_t cell_id) {
     uint32_t primask = __get_PRIMASK();
     __disable_irq();
@@ -299,11 +288,14 @@ static void _finalize_join_response(uint64_t node_id, uint8_t cell_id) {
     uint8_t next_last = (queue_vars.joinresp_queue.last + 1) % MARI_JOIN_RESPONSE_QUEUE_SIZE;
     if (next_last == queue_vars.joinresp_queue.current) {
         __set_PRIMASK(primask);
+        CRAFT_DIAG_PRINTF("[DIAG-GW] DROP join response for 0x%08X%08X: FIFO full\n",
+                          CRAFT_DIAG_ID_HI(node_id), CRAFT_DIAG_ID_LO(node_id));
         return;  // FIFO full, drop (node will retry)
     }
 
-    mr_packet_t *jp   = &queue_vars.joinresp_queue.packets[queue_vars.joinresp_queue.last];
-    uint8_t      len  = mr_build_packet_join_response(jp->buffer, node_id);
+    mr_packet_t *jp       = &queue_vars.joinresp_queue.packets[queue_vars.joinresp_queue.last];
+    uint8_t      len      = mr_build_packet_join_response(jp->buffer, node_id);
+    bool         attached = false;
     jp->buffer[len++] = cell_id;
     for (uint8_t i = 0; i < EDHOC_MSG3_ENTRIES; i++) {
         if (edhoc_msg3_entries[i].node_id == node_id && edhoc_msg3_entries[i].len > 0) {
@@ -312,6 +304,7 @@ static void _finalize_join_response(uint64_t node_id, uint8_t cell_id) {
                 jp->buffer[len++] = edhoc_msg3_entries[i].len;
                 memcpy(jp->buffer + len, edhoc_msg3_entries[i].data, edhoc_msg3_entries[i].len);
                 len += edhoc_msg3_entries[i].len;
+                attached = true;
             }
             edhoc_msg3_entries[i].node_id = 0;
             edhoc_msg3_entries[i].len     = 0;
@@ -323,6 +316,13 @@ static void _finalize_join_response(uint64_t node_id, uint8_t cell_id) {
     queue_vars.joinresp_queue.last = next_last;
 
     __set_PRIMASK(primask);
+
+    // Printed outside the critical section -- CRAFT_DIAG_PRINTF can block on
+    // the RTT buffer, and this function nests inside the MAC ISR.
+    CRAFT_DIAG_PRINTF("[DIAG-GW] TX join response queued for 0x%08X%08X cell=%u connect_reply=%s\n",
+                      CRAFT_DIAG_ID_HI(node_id), CRAFT_DIAG_ID_LO(node_id), (unsigned)cell_id,
+                      attached ? "yes" : "no");
+    (void)attached;
 }
 
 // Look up the uplink cell already assigned to a joined node (gateway side).
@@ -337,8 +337,7 @@ static int16_t _gateway_find_uplink_cell_id(uint64_t node_id) {
 }
 
 void mr_queue_set_join_response(uint64_t node_id, uint8_t assigned_cell_id) {
-    // Hold the join response until msg3 arrives from the edge.
-    // Search for an existing slot for this node (re-join) or a free slot.
+    // Hold the join response until msg3 arrives; reuse this node's slot if it's a re-join, else take a free one.
     for (uint8_t i = 0; i < PENDING_JOINRESP_SIZE; i++) {
         if (!pending_joinresp_pool[i].valid || pending_joinresp_pool[i].node_id == node_id) {
             pending_joinresp_pool[i].valid       = true;

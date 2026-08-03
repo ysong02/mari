@@ -36,11 +36,8 @@
 
 #define MAURA_APP_TIMER_DEV 1
 
-// The reboot command is an unacknowledged broadcast: a node that misses it is
-// left running while the gateway has already dropped it. Send several copies
-// (one per downlink slot, ~22 downlink slots per slotframe) to make that
-// unlikely, and only wipe the association table once they have gone out.
-#define REBOOT_BROADCAST_COPIES 5
+// Unacked broadcast: send several copies so a missed one can't leave a zombie node running.
+#define REBOOT_BROADCAST_COPIES 1
 
 typedef struct {
     bool uart_to_radio_packet_ready;
@@ -54,17 +51,7 @@ typedef struct {
     uint8_t  len;
 } edhoc_pending_t;
 
-// MARI_NEW_PACKET (status packets), MARI_KEEPALIVE, MARI_NODE_JOINED and
-// MARI_NODE_LEFT all land here. MSG1 and the uplink attest tag are pulled out
-// before this point into their own dedicated slots (see _mari_event_callback)
-// -- both used to share this buffer too, and both were found to be silently
-// lost when a second event arrived before the main loop drained the first.
-// A single slot has that failure mode by construction for ANY event type it
-// carries; a ring buffer removes the whole class of bug instead of requiring
-// a new dedicated slot every time a different event type turns out to matter
-// (as happened for MARI_NODE_LEFT: its loss under this exact race is the
-// leading theory for why a node can be silently deassigned by the gateway's
-// RX timeout with no visible cause on the edge -- see CRAFT_DIAG note below).
+// A single slot loses events to a race if a second one arrives before the main loop drains the first (already hit msg1/uplink/NODE_LEFT); a ring removes that whole bug class.
 #define EVENT_RING_SIZE 4
 
 typedef struct {
@@ -81,23 +68,26 @@ static edhoc_pending_t  _edhoc_msg1_pend = {0};
 // does -- see the comment in _mari_event_callback().
 static edhoc_pending_t _edhoc_uplink_pend = {0};
 
-// Single-producer (MAC/IRQ context, via _mari_event_callback), single-consumer
-// (main loop) ring. Lock-free: producer only ever writes head, consumer only
-// ever writes tail: no critical section needed, just ordering barriers.
+typedef struct {
+    bool     ready;
+    uint64_t node_id;
+    uint8_t  joined;
+    uint8_t  len;
+} craft_diag_pending_t;
+
+// Relays uplink-RX diagnostics over IPC/UART instead of RTT, which perturbs the timing being diagnosed.
+static craft_diag_pending_t _craft_diag_pend = {0};
+
+// Lock-free SPSC ring: producer (IRQ) writes head, consumer (main loop) writes tail.
 static gw_event_t       _event_ring[EVENT_RING_SIZE];
 static volatile uint8_t _event_ring_head = 0;
 static volatile uint8_t _event_ring_tail = 0;
 
-// Count of events dropped because the ring was full (not "single slot
-// overwritten" any more -- now genuinely means the main loop fell behind by
-// more than EVENT_RING_SIZE events, which should be rare).
+// Count of events dropped because the ring was full (main loop fell behind).
 static volatile uint32_t _dropped_events = 0;
 
-// ASN at which the post-reboot association wipe is due (0 = nothing pending),
-// and the ASN the reboot command was issued at (nodes heard from after it have
-// already rejoined and must survive the wipe).
-static uint64_t _reboot_cleanup_asn = 0;
-static uint64_t _reboot_issued_asn  = 0;
+static uint64_t _reboot_cleanup_asn = 0;  ///< ASN when the post-reboot wipe is due (0 = none pending)
+static uint64_t _reboot_issued_asn  = 0;  ///< ASN the reboot was issued at; nodes heard from since must survive the wipe
 
 extern schedule_t schedule_tiny, schedule_medium, schedule_big, schedule_huge;
 static schedule_t *schedule_app = &schedule_huge;
@@ -117,12 +107,15 @@ static void _mari_event_callback(mr_event_t event, mr_event_data_t event_data) {
         return;
     }
 
-    // The uplink attest tag arrives as a plain MARI_NEW_PACKET, so it used to
-    // share the single-slot buffer below with every status packet, keepalive
-    // and NODE_JOINED. Anything arriving before the main loop drains that slot
-    // destroys whatever was in it, and the main loop can stall for milliseconds
-    // inside _ipc_send_to_app()'s spin-wait. msg1 already has its own slot for
-    // exactly this reason; the tag needs the same treatment.
+    if (event == MARI_CRAFT_DIAG_UPLINK_RX) {
+        _craft_diag_pend.node_id = event_data.data.edhoc.node_id;
+        _craft_diag_pend.len     = event_data.data.edhoc.len;
+        _craft_diag_pend.joined  = (uint8_t)event_data.tag;
+        _craft_diag_pend.ready   = true;
+        return;
+    }
+
+    // Attest tag arrives as a plain MARI_NEW_PACKET; give it its own slot too, same reason as msg1.
     if (event == MARI_NEW_PACKET) {
         const mari_packet_t *p = &event_data.data.new_packet;
         if (p->payload_len >= 2 && p->payload[0] == MARI_EDHOC_PAYLOAD_TAG) {
@@ -190,9 +183,7 @@ int main(void) {
     while (1) {
         __WFE();
 
-        // Post-reboot wipe, deferred until the broadcast copies have gone out.
-        // Falls through to mari_event_loop() below, which recomputes the bloom
-        // filter that mr_assoc_gateway_remove_all_nodes() just marked dirty.
+        // Post-reboot association wipe, deferred until the broadcast copies are out.
         if (_reboot_cleanup_asn != 0 && mr_mac_get_asn() >= _reboot_cleanup_asn) {
             _reboot_cleanup_asn = 0;
             CRAFT_DIAG_PRINTF("[DIAG-GW] reboot cleanup: wiping association table\n");
@@ -251,12 +242,7 @@ int main(void) {
                                       CRAFT_DIAG_ID_LO(event_data.data.node_info.node_id),
                                       (int)event_data.tag);
                     metrics_clear_node(event_data.data.node_info.node_id);
-                    // Reason tag appended after node_id -- without it the edge
-                    // can see THAT a node left but never WHY (RX timeout vs.
-                    // bloom-filter miss vs. attestation-failure kick), which
-                    // otherwise only shows up in a gateway RTT session that
-                    // itself perturbs the UART link being diagnosed. See
-                    // mr_event_tag_t in models.h for the value meanings.
+                    // Reason tag appended after node_id so the edge knows WHY, not just that it left (see mr_event_tag_t in models.h).
                     send_len       = 1 + sizeof(uint64_t) + 1;
                     _ipc_tx_buf[0] = MARI_EDGE_NODE_LEFT;
                     memcpy(_ipc_tx_buf + 1, &event_data.data.node_info.node_id, sizeof(uint64_t));
@@ -301,7 +287,20 @@ int main(void) {
             pos += sizeof(uint64_t);
             memcpy(_ipc_tx_buf + pos, _edhoc_msg1_pend.data, elen);
             pos += elen;
+            CRAFT_DIAG_PRINTF("[DIAG-GW] uplink EDHOC(MSG1) from 0x%08X%08X %u B -> edge\n",
+                              CRAFT_DIAG_ID_HI(src), CRAFT_DIAG_ID_LO(src), (unsigned)elen);
             _ipc_send_to_app(_ipc_tx_buf, pos);
+        }
+
+        // Drain the debug-free uplink RX diagnostic; not gated behind CRAFT_DIAG since it's a cheap IPC send, not RTT.
+        if (_craft_diag_pend.ready) {
+            _craft_diag_pend.ready = false;
+            uint64_t src = _craft_diag_pend.node_id;
+            _ipc_tx_buf[0] = MARI_EDGE_CRAFT_DIAG;
+            memcpy(_ipc_tx_buf + 1, &src, sizeof(uint64_t));
+            _ipc_tx_buf[1 + sizeof(uint64_t)] = _craft_diag_pend.joined;
+            _ipc_tx_buf[2 + sizeof(uint64_t)] = _craft_diag_pend.len;
+            _ipc_send_to_app(_ipc_tx_buf, 3 + sizeof(uint64_t));
         }
 
         if (_app_vars.uart_to_radio_packet_ready) {
@@ -309,6 +308,8 @@ int main(void) {
             uint8_t packet_type = ipc_shared_data.uart_to_radio_tx[0];
 
             if (packet_type == MARI_EDGE_REBOOT_ALL) {
+                CRAFT_DIAG_PRINTF("[DIAG-GW] RX reboot_all from edge -- broadcasting %u copies\n",
+                                  (unsigned)REBOOT_BROADCAST_COPIES);
                 uint8_t reboot_buf[sizeof(mr_packet_header_t) + 1];
                 memset(reboot_buf, 0, sizeof(reboot_buf));
                 mr_packet_header_t *hdr = (mr_packet_header_t *)reboot_buf;
@@ -321,10 +322,7 @@ int main(void) {
                 for (uint8_t i = 0; i < REBOOT_BROADCAST_COPIES; i++) {
                     mari_tx(reboot_buf, sizeof(reboot_buf));
                 }
-                // mari_tx() only enqueues; the copies leave one per downlink
-                // slot. Wiping the association table here would deassign every
-                // node before the command is even on air, so defer it by one
-                // full slotframe (>= REBOOT_BROADCAST_COPIES downlink slots).
+                // mari_tx() only enqueues; defer the association wipe one slotframe so it can't run before the reboot is even on air.
                 _reboot_issued_asn  = mr_mac_get_asn();
                 _reboot_cleanup_asn = _reboot_issued_asn +
                                       mr_scheduler_get_active_schedule_slot_count();
@@ -353,6 +351,8 @@ int main(void) {
                     memcpy(&node_id, body, sizeof(uint64_t));
                     uint8_t *msg2_data = body + sizeof(uint64_t);
                     uint8_t  msg2_len  = body_len - (uint8_t)sizeof(uint64_t);
+                    CRAFT_DIAG_PRINTF("[DIAG-GW] RX connect reply from edge for 0x%08X%08X (%u B)\n",
+                                      CRAFT_DIAG_ID_HI(node_id), CRAFT_DIAG_ID_LO(node_id), (unsigned)msg2_len);
                     // Reuse mr_queue_set_edhoc_msg3: finalizes the pending join response
                     mr_queue_set_edhoc_msg3(node_id, msg2_data, msg2_len);
                 }

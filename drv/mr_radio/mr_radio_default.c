@@ -315,12 +315,7 @@ static void _radio_enable(void) {
 //=========================== interrupt handlers ===============================
 
 /**
- * @brief Interruption handler for the Radio.
- *
- * This function will be called each time a radio packet is received.
- * it will clear the interrupt, copy the last received packet
- * and called the user-defined callbacks to process the packet.
- *
+ * @brief Radio interrupt handler: clears the event, tracks state, and fires the start/end packet callbacks.
  */
 void RADIO_IRQHandler(void) {
     uint8_t  timer_dev = 2;  // FIXME: pass by parameter, or have radio report it somehow

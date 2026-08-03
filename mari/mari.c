@@ -31,8 +31,7 @@
 
 //=========================== defines ==========================================
 
-// CRAFT_DIAG / CRAFT_DIAG_PRINTF now live in models.h so the gateway app can
-// use the same switch. See the note there before leaving it enabled.
+// CRAFT_DIAG / CRAFT_DIAG_PRINTF live in models.h (shared with the gateway app) -- see the note there before enabling.
 
 typedef struct {
     mr_node_type_t node_type;
@@ -116,11 +115,11 @@ uint64_t mari_node_gateway_id(void) {
 uint64_t mari_node_get_last_asn_dl(void) {
     return mr_mac_get_asn() - 1;  // asn -1 is the current slot
 }
+
 //=========================== iternal api =====================================
 
 void mr_mari_force_gateway_startup_random_delay(void) {
-    // in the gateway, defer the start of the MAC for a random time (between 0 and slotframe duration)
-    // this is to avoid gateway-to-gateway mutual cancellation, in case all gateways start at the same time
+    // Random startup delay so simultaneously-booting gateways don't mutually cancel.
     uint8_t rng_value;
     mr_rng_read_u8(&rng_value);
     // restrict random value to slotframe slot count
@@ -165,8 +164,8 @@ bool mr_handle_packet(uint8_t *packet, uint8_t length) {
                 }
                 // assign a cell; re-joins are accepted since the join response may collide.
                 int16_t cell_id = mr_scheduler_gateway_assign_next_available_uplink_cell(header->src, mr_mac_get_asn());
-                // printf("[DIAG-GW] join request from 0x%016llX -> assigned cell_id=%d\n",
-                //        (unsigned long long)header->src, (int)cell_id);
+                CRAFT_DIAG_PRINTF("[DIAG-GW] RX join request from 0x%08X%08X -> assigned cell_id=%d\n",
+                                  CRAFT_DIAG_ID_HI(header->src), CRAFT_DIAG_ID_LO(header->src), (int)cell_id);
                 if (cell_id >= 0) {
                     // at the packet level, max_nodes is limited to 256 (using uint8_t cell_id)
                     mr_queue_set_join_response(header->src, (uint8_t)cell_id);
@@ -180,10 +179,7 @@ bool mr_handle_packet(uint8_t *packet, uint8_t length) {
             }
             case MARI_PACKET_DATA:
             {
-                // Only trace what matters: the EDHOC/attest uplink, and any
-                // packet rejected for not being joined. Printing every status
-                // packet meant ~2 blocking RTT writes/second from MAC
-                // interrupt context, which perturbs the TDMA being observed.
+                // Only trace the EDHOC/attest uplink and joined-rejects -- tracing every status packet would perturb the TDMA being observed.
                 {
                     uint8_t first_byte = packet[sizeof(mr_packet_header_t)];
                     if (first_byte == MARI_EDHOC_PAYLOAD_TAG || !from_joined_node) {
@@ -191,6 +187,12 @@ bool mr_handle_packet(uint8_t *packet, uint8_t length) {
                                           CRAFT_DIAG_ID_HI(header->src), CRAFT_DIAG_ID_LO(header->src),
                                           (int)from_joined_node, (unsigned)length,
                                           (unsigned)first_byte);
+                        // Same, but relayed via IPC/UART -- observable without a debugger attached.
+                        mr_event_data_t diag_event  = { 0 };
+                        diag_event.data.edhoc.node_id = header->src;
+                        diag_event.data.edhoc.len     = length;
+                        diag_event.tag                = (mr_event_tag_t)(from_joined_node ? 1 : 0);
+                        _mari_vars.app_event_callback(MARI_CRAFT_DIAG_UPLINK_RX, diag_event);
                     }
                 }
                 if (!from_joined_node) {

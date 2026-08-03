@@ -70,11 +70,7 @@ void mr_radio_set_frequency(uint8_t freq);
 /**
  * @brief Set the physical channel used of the radio
  *
- * BLE channels in the interval [0-39]
- * Channels 37, 38 and 39 are BLE advertising channels.
- *
- * IEEE 802.15.4 in the interval [11 - 26]
- * Channels range from 2405 MHz (channel 11) to 2480 MHz (channel 26)
+ * BLE channels [0-39] (37-39 are advertising); IEEE 802.15.4 channels [11-26] (2405-2480 MHz).
  *
  * @param[in] channel   Channel used by the radio
  */
@@ -90,11 +86,7 @@ void mr_radio_set_network_address(uint32_t addr);
 /**
  * @brief Sends a single packet through the Radio
  *
- * NOTE: Must configure the radio and the frequency before calling this function.
- * (with the functions mr_radio_init mr_radio_set_frequency).
- *
- * NOTE: The radio must not be receiving packets when calling this function.
- * (first call mr_radio_disable if needed)
+ * NOTE: call mr_radio_init/mr_radio_set_frequency first, and mr_radio_disable first if currently receiving.
  *
  * @param[in] packet pointer to the array of data to send over the radio (max size = 32)
  * @param[in] length Number of bytes to send (max size = 32)
@@ -105,8 +97,7 @@ void mr_radio_tx(const uint8_t *packet, uint8_t length);
 /**
  * @brief Starts Receiving packets through the Radio
  *
- * NOTE: Must configure the radio and the frequency before calling this function.
- * (with the functions mr_radio_init mr_radio_set_frequency).
+ * NOTE: call mr_radio_init/mr_radio_set_frequency first.
  *
  */
 void mr_radio_rx(void);

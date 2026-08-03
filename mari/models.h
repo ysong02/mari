@@ -42,14 +42,8 @@
 #define MARI_REBOOT_PAYLOAD_TAG 0x52
 #define MARI_EDHOC_MAX_MSG_LEN  150
 
-// Join/uplink tracing for CRAFT debugging. Several of these printf()s run in
-// MAC interrupt context, so set this to 0 for the 100-node timing runs -- at
-// that scale the blocking prints perturb the very TDMA behaviour being
-// measured. Users must include <stdio.h>.
-//
-// Gateway output goes to RTT on the nRF5340 *network* core, a separate target
-// from both the node and the gateway app core.
-#define CRAFT_DIAG 1
+// Join/uplink tracing for CRAFT debugging -- keep 0 for timing runs, these printf()s run in MAC interrupt context and perturb the TDMA being measured (requires <stdio.h>; gateway output goes to RTT on the nRF5340 network core).
+#define CRAFT_DIAG 0
 
 #if CRAFT_DIAG
 #define CRAFT_DIAG_PRINTF(...) printf(__VA_ARGS__)
@@ -120,6 +114,7 @@ typedef enum {
     MARI_EDHOC_MSG1,  ///< Node received EDHOC msg1 in beacon
     MARI_EDHOC_MSG2,  ///< Gateway received EDHOC msg2 in join request
     MARI_EDHOC_MSG3,  ///< Node received EDHOC msg3 in join response
+    MARI_CRAFT_DIAG_UPLINK_RX,  ///< Gateway RX'd an EDHOC-tagged (or joined-reject) uplink packet -- relayed to the edge via IPC/UART, no debugger needed.
 } mr_event_t;
 
 typedef enum {
@@ -221,6 +216,7 @@ typedef enum {
     MARI_EDGE_EDHOC        = 6,
     MARI_EDGE_KICK_NODE    = 7,
     MARI_EDGE_REBOOT_ALL   = 9,
+    MARI_EDGE_CRAFT_DIAG   = 10,  ///< debug-free relay of gateway-side uplink RX diagnostics (see MARI_CRAFT_DIAG_UPLINK_RX)
 } mr_gateway_edge_type_t;
 
 typedef enum {

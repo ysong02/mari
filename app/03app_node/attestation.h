@@ -43,8 +43,7 @@ typedef enum {
 /// Builds h_i|Ta_i|Tb_i|PK_i|SigExp|sigma_i. Returns CRAFT_CONNECT_SIZE.
 uint8_t craft_build_connect_request(uint8_t *buffer);
 
-/// Verifies sigma_edge against PK_O and extracts pk_edge/challenge. Also
-/// derives k_ij (kept for protocol fidelity though unused downstream).
+/// Verifies sigma_edge against PK_O, extracts pk_edge/challenge, and derives k_ij (unused downstream, kept for protocol fidelity).
 craft_status_t craft_process_connect_reply(const uint8_t *buffer, uint8_t buffer_len,
                                             uint8_t pk_edge_out[CRAFT_X25519_KEY_SIZE],
                                             uint8_t challenge_out[CRAFT_CHALLENGE_SIZE],
