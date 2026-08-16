@@ -41,17 +41,6 @@ repo/
 └── nRF/                   # Nordic Semiconductor SDK files
 ```
 
-## Example Usage
-
-Gateway initialization:
-```c
-mari_init(MARI_GATEWAY, MARI_NET_ID_DEFAULT, schedule, event_callback);
-```
-
-Node initialization:
-```c
-mari_init(MARI_NODE, MARI_NET_ID_PATTERN_ANY, schedule, event_callback);
-```
 
 ## Hardware Support
 
@@ -75,6 +64,3 @@ This project is licensed under the terms included in the LICENSE file.
 The network that we operate on:
 - Fedrecheski et al., "Mari: Connecting Large Scale Robot Swarms over BLE using TSCH with Multiple Independent Gateways", CrystalFreeIoT Workshop 2025 [Forthcoming]
 
-## Acknowledgments
-
-This project has received funding from the EU's Horizon Europe Framework Programme under Grant Agreement No. 101093046.
