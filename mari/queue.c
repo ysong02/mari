@@ -47,8 +47,8 @@ typedef struct {
 } pending_joinresp_t;
 
 typedef struct {
-    uint8_t length;
     uint8_t buffer[MARI_PACKET_MAX_SIZE];
+    uint8_t length;
 } mr_packet_t;
 
 typedef struct {

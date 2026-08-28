@@ -38,8 +38,7 @@
 
 // Must stay above the gateway's JOINRESP_WAIT_TIMEOUT_SLOTS (queue.c).
 #define CONNECT_REPLY_TIMEOUT_SLOTS 6000
-// Fire-and-forget (matches SALSA-native): retry this many times (500ms apart), then give up without resetting.
-#define ATTEST_MAX_RETRIES          5
+#define ATTEST_MAX_RETRIES          30
 
 #define DEFAULT_PAYLOAD_SIZE (MARI_PACKET_MAX_SIZE - (uint8_t)sizeof(mr_packet_header_t) - 2u)
 
@@ -56,7 +55,7 @@ typedef struct {
     bool            send_status_ready;
 
     bool     connect_started;    ///< connect request built and appended to join request
-    bool     attest_ready;       ///< attest tag ready to transmit (cleared once ATTEST_MAX_RETRIES is reached)
+    bool     attest_ready;       ///< attest tag ready to transmit
     bool     connect_completed;  ///< connect reply verified, k_ij derived, challenge stored
     uint8_t  attest_tx_count;    ///< number of times the attest tag has been transmitted (capped by ATTEST_MAX_RETRIES)
     uint64_t conn_asn_dl;        ///< ASN when join response arrived
@@ -104,6 +103,8 @@ static uint8_t _pk_edge[CRAFT_X25519_KEY_SIZE]       = { 0 };
 static uint8_t _challenge[CRAFT_CHALLENGE_SIZE]      = { 0 };
 static uint8_t _k_ij[CRAFT_X25519_KEY_SIZE]          = { 0 };  // derived for connect protocol fidelity, unused downstream (beat dropped)
 static uint8_t _attest_tag[CRAFT_ATTEST_TAG_SIZE]    = { 0 };
+
+static const mr_gpio_t p026 = { .port = 0, .pin = 26 };  //sync otii
 
 //=========================== private =========================================
 
@@ -164,9 +165,13 @@ static void _mari_event_cb(mr_event_t event, mr_event_data_t event_data) {
 //=========================== main ============================================
 
 int main(void) {
+    
     mr_timer_hf_init(CRAFT_APP_TIMER_DEV);
     board_init();
     board_set_led_mari(BLUE);
+
+    mr_gpio_init(&p026, MR_GPIO_OUT); //sync otii
+    
 
     // Random backoff to spread join requests across beacon rounds
     mr_rng_init();
@@ -177,6 +182,7 @@ int main(void) {
     }
 
     mari_init(MARI_NODE, 0xa3, schedule_app, &_mari_event_cb);
+    mr_gpio_set(&p026); //measurement starts
 
     mr_timer_hf_set_periodic_us(CRAFT_APP_TIMER_DEV, 0, 100 * 1000, &_led_blink_cb);
     mr_timer_hf_set_periodic_us(CRAFT_APP_TIMER_DEV, 1, 500 * 1000, &_send_status_cb);
@@ -192,6 +198,8 @@ int main(void) {
         __WFE();
 
         if (_node_vars.event_ready) {
+
+            
             _node_vars.event_ready = false;
 
             mr_event_t      event      = _node_vars.event;
@@ -201,9 +209,13 @@ int main(void) {
                 case MARI_NEW_PACKET:
                 {
                     mari_packet_t pkt = event_data.data.new_packet;
-                    if (pkt.payload_len >= 1 && pkt.payload[0] == MARI_REBOOT_PAYLOAD_TAG) {
-                        printf("[CRAFT] RX reboot command -- resetting\n");
-                        NVIC_SystemReset();
+                    if (pkt.payload_len >= 2 && pkt.payload[0] == MARI_REBOOT_PAYLOAD_TAG) {
+                        uint8_t seq = pkt.payload[1];
+                        if (seq != (uint8_t)NRF_POWER->GPREGRET) {
+                            NRF_POWER->GPREGRET = seq;
+                            printf("[CRAFT] RX reboot command (seq=%u) -- resetting\n", (unsigned)seq);
+                            NVIC_SystemReset();
+                        }
                     } else if (pkt.payload_len >= 2 && pkt.payload[0] == MARI_EDHOC_PAYLOAD_TAG) {
                         // connect reply delivered as downlink data packet (retry after join)
                         uint8_t len = pkt.payload[1];
@@ -270,6 +282,7 @@ int main(void) {
             _node_vars.connect_completed = true;
             _node_vars.attest_tx_count   = 0;
             board_set_led_mari(GREEN);
+            mr_gpio_clear(&p026);
 
             reply_done:;
         }
@@ -297,9 +310,9 @@ int main(void) {
                 if (_node_vars.attest_tx_count >= ATTEST_MAX_RETRIES) {
                     printf("[CRAFT] attest tag never acked -- giving up after %u tries, staying connected\n",
                            (unsigned)ATTEST_MAX_RETRIES);
-                    // Fire-and-forget like SALSA: give up and fall back to status packets, no reset either way.
                     _node_vars.attest_ready = false;
                 }
+                
             } else {
                 mari_node_tx_payload(_status_pkt, sizeof(_status_pkt));
             }

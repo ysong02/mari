@@ -36,8 +36,14 @@
 
 #define MAURA_APP_TIMER_DEV 1
 
-// Unacked broadcast: send several copies so a missed one can't leave a zombie node running.
-#define REBOOT_BROADCAST_COPIES 1
+// Unacked broadcast: send several copies, spaced out, so a short burst of
+// interference around round-transition time can't make a node miss all of
+// them and keep running as a zombie from the previous round. Kept tight
+// (~1 slotframe apart) so this doesn't eat much of the round's time budget --
+// the seq-based dedup in the node (GPREGRET) is what actually prevents a
+// node that already rebooted from resetting again on a later copy.
+#define REBOOT_BROADCAST_COPIES               8
+#define REBOOT_REBROADCAST_INTERVAL_SLOTFRAMES 1
 
 typedef struct {
     bool uart_to_radio_packet_ready;
@@ -88,6 +94,8 @@ static volatile uint32_t _dropped_events = 0;
 
 static uint64_t _reboot_cleanup_asn = 0;  ///< ASN when the post-reboot wipe is due (0 = none pending)
 static uint64_t _reboot_issued_asn  = 0;  ///< ASN the reboot was issued at; nodes heard from since must survive the wipe
+static uint8_t  _reboot_broadcasts_remaining = 0;  ///< remaining spaced-out rebroadcast copies (0 = none pending)
+static uint64_t _next_reboot_tx_asn          = 0;  ///< ASN the next spaced-out rebroadcast copy is due
 
 extern schedule_t schedule_tiny, schedule_medium, schedule_big, schedule_huge;
 static schedule_t *schedule_app = &schedule_huge;
@@ -95,6 +103,24 @@ static schedule_t *schedule_app = &schedule_huge;
 volatile __attribute__((section(".shared_data"))) ipc_shared_data_t ipc_shared_data;
 
 static uint8_t _ipc_tx_buf[UINT8_MAX];
+
+// Same seq for every repeated copy of one reboot_all campaign, so the node can
+// tell a late duplicate apart from a genuinely new reboot instruction.
+static uint8_t _reboot_seq = 0;
+
+static void _send_reboot_broadcast(void) {
+    uint8_t reboot_buf[sizeof(mr_packet_header_t) + 2];
+    memset(reboot_buf, 0, sizeof(reboot_buf));
+    mr_packet_header_t *hdr = (mr_packet_header_t *)reboot_buf;
+    hdr->version    = 2;
+    hdr->type       = MARI_PACKET_DATA;
+    hdr->network_id = mr_assoc_get_network_id();
+    hdr->dst        = MARI_BROADCAST_ADDRESS;
+    hdr->src        = mr_device_id();
+    reboot_buf[sizeof(mr_packet_header_t)]     = MARI_REBOOT_PAYLOAD_TAG;
+    reboot_buf[sizeof(mr_packet_header_t) + 1] = _reboot_seq;
+    mari_tx(reboot_buf, sizeof(reboot_buf));
+}
 
 static void _mari_event_callback(mr_event_t event, mr_event_data_t event_data) {
     if (event == MARI_EDHOC_MSG2) {
@@ -182,6 +208,14 @@ int main(void) {
 
     while (1) {
         __WFE();
+
+        // Spaced-out reboot rebroadcast: fire the next copy once its ASN is due.
+        if (_reboot_broadcasts_remaining > 0 && mr_mac_get_asn() >= _next_reboot_tx_asn) {
+            _send_reboot_broadcast();
+            _reboot_broadcasts_remaining--;
+            _next_reboot_tx_asn += REBOOT_REBROADCAST_INTERVAL_SLOTFRAMES *
+                                    mr_scheduler_get_active_schedule_slot_count();
+        }
 
         // Post-reboot association wipe, deferred until the broadcast copies are out.
         if (_reboot_cleanup_asn != 0 && mr_mac_get_asn() >= _reboot_cleanup_asn) {
@@ -308,24 +342,28 @@ int main(void) {
             uint8_t packet_type = ipc_shared_data.uart_to_radio_tx[0];
 
             if (packet_type == MARI_EDGE_REBOOT_ALL) {
-                CRAFT_DIAG_PRINTF("[DIAG-GW] RX reboot_all from edge -- broadcasting %u copies\n",
-                                  (unsigned)REBOOT_BROADCAST_COPIES);
-                uint8_t reboot_buf[sizeof(mr_packet_header_t) + 1];
-                memset(reboot_buf, 0, sizeof(reboot_buf));
-                mr_packet_header_t *hdr = (mr_packet_header_t *)reboot_buf;
-                hdr->version    = 2;
-                hdr->type       = MARI_PACKET_DATA;
-                hdr->network_id = mr_assoc_get_network_id();
-                hdr->dst        = MARI_BROADCAST_ADDRESS;
-                hdr->src        = mr_device_id();
-                reboot_buf[sizeof(mr_packet_header_t)] = MARI_REBOOT_PAYLOAD_TAG;
-                for (uint8_t i = 0; i < REBOOT_BROADCAST_COPIES; i++) {
-                    mari_tx(reboot_buf, sizeof(reboot_buf));
+                if (ipc_shared_data.uart_to_radio_len >= 2) {
+                    _reboot_seq = ipc_shared_data.uart_to_radio_tx[1];
                 }
-                // mari_tx() only enqueues; defer the association wipe one slotframe so it can't run before the reboot is even on air.
-                _reboot_issued_asn  = mr_mac_get_asn();
+                CRAFT_DIAG_PRINTF("[DIAG-GW] RX reboot_all from edge (seq=%u) -- broadcasting %u copies over time\n",
+                                  (unsigned)_reboot_seq, (unsigned)REBOOT_BROADCAST_COPIES);
+                _send_reboot_broadcast();
+
+                // Spread the remaining copies out (see REBOOT_REBROADCAST_INTERVAL_SLOTFRAMES)
+                // instead of firing them all in one burst, so a short-lived interference
+                // window can't make a node miss every single copy.
+                _reboot_issued_asn           = mr_mac_get_asn();
+                _reboot_broadcasts_remaining = REBOOT_BROADCAST_COPIES - 1;
+                _next_reboot_tx_asn          = _reboot_issued_asn +
+                                               REBOOT_REBROADCAST_INTERVAL_SLOTFRAMES *
+                                                   mr_scheduler_get_active_schedule_slot_count();
+
+                // Defer the association wipe until after the whole broadcast campaign
+                // (plus one extra slotframe of margin), so it can't run ahead of the
+                // last copies still being sent.
                 _reboot_cleanup_asn = _reboot_issued_asn +
-                                      mr_scheduler_get_active_schedule_slot_count();
+                                      (REBOOT_BROADCAST_COPIES * REBOOT_REBROADCAST_INTERVAL_SLOTFRAMES + 1) *
+                                          mr_scheduler_get_active_schedule_slot_count();
                 continue;
             }
 
