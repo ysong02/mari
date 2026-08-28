@@ -30,7 +30,7 @@
 
 //=========================== debug ============================================
 
-#ifndef DEBUG  // FIXME: remove before merge. Just to make VS Code enable code behind `#ifdef DEBUG`
+#ifndef DEBUG  // FIXME: remove before merge -- only here so VS Code enables the code behind `#ifdef DEBUG`
 #define DEBUG
 #endif
 

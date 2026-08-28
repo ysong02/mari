@@ -32,7 +32,7 @@
 #define BLE_2M_B_MS                 (BLE_2M / 8 / 1000)   // 250 bytes/ms
 #define BLE_2M_US_PER_BYTE          (1000 / BLE_2M_B_MS)  // 4 us
 
-// Intra-slot durations. TOA definitions consider BLE 2M mode.
+// Intra-slot durations, with TOA definitions assuming BLE 2M mode.
 #define MARI_TS_TX_OFFSET            (400)                                               // time for radio setup before TX
 #define MARI_RX_GUARD_TIME           (140)                                               // time range relative to MARI_TS_TX_OFFSET for the receiver to start RXing
 #define MARI_END_GUARD_TIME          (MARI_RX_GUARD_TIME + 100)                          // Added 40 us based on measurements witn nRF52 and nRF53

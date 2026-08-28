@@ -40,7 +40,7 @@ typedef enum {
 
 //=========================== public functions =================================
 
-/// Builds h_i|Ta_i|Tb_i|PK_i|SigExp|sigma_i. Returns CRAFT_CONNECT_SIZE.
+/// Builds h_i|Ta_i|Tb_i|PK_i|SigExp|sigma_i, returning CRAFT_CONNECT_SIZE.
 uint8_t craft_build_connect_request(uint8_t *buffer);
 
 /// Verifies sigma_edge against PK_O, extracts pk_edge/challenge, and derives k_ij (unused downstream, kept for protocol fidelity).

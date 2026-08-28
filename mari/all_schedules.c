@@ -37,7 +37,7 @@ schedule_t schedule_tiny = {
     .backoff_n_max = 9,
     .n_cells = 17,
     .cells = {
-        // Begin with beacon cells. They use their own channel offsets and frequencies.
+        // Begin with beacon cells, which use their own channel offsets and frequencies.
         {'B', 0, 0, 0, 0, 0, 0},
         {'B', 1, 0, 0, 0, 0, 0},
         {'B', 2, 0, 0, 0, 0, 0},
@@ -67,7 +67,7 @@ schedule_t schedule_medium = {
     .backoff_n_max = 9,
     .n_cells = 67,
     .cells = {
-        // Begin with beacon cells. They use their own channel offsets and frequencies.
+        // Begin with beacon cells, which use their own channel offsets and frequencies.
         {'B', 0, 0, 0, 0, 0, 0},
         {'B', 1, 0, 0, 0, 0, 0},
         {'B', 2, 0, 0, 0, 0, 0},
@@ -148,7 +148,7 @@ schedule_t schedule_big = {
     .backoff_n_max = 9,
     .n_cells = 101,
     .cells = {
-        // Begin with beacon cells. They use their own channel offsets and frequencies.
+        // Begin with beacon cells, which use their own channel offsets and frequencies.
         {'B', 0, 0, 0, 0, 0, 0},
         {'B', 1, 0, 0, 0, 0, 0},
         {'B', 2, 0, 0, 0, 0, 0},
@@ -262,7 +262,7 @@ schedule_t schedule_huge = {
     .backoff_n_max = 9,
     .n_cells = 149,
     .cells = {
-        // Begin with beacon cells. They use their own channel offsets and frequencies.
+        // Begin with beacon cells, which use their own channel offsets and frequencies.
         {'B', 0, 0, 0, 0, 0, 0},
         {'B', 1, 0, 0, 0, 0, 0},
         {'B', 2, 0, 0, 0, 0, 0},

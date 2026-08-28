@@ -36,12 +36,7 @@
 
 #define MAURA_APP_TIMER_DEV 1
 
-// Unacked broadcast: send several copies, spaced out, so a short burst of
-// interference around round-transition time can't make a node miss all of
-// them and keep running as a zombie from the previous round. Kept tight
-// (~1 slotframe apart) so this doesn't eat much of the round's time budget --
-// the seq-based dedup in the node (GPREGRET) is what actually prevents a
-// node that already rebooted from resetting again on a later copy.
+// Send several spaced-out unacked broadcast copies so a short burst of interference can't make a node miss all of them and run on as a zombie, while the node's seq-based GPREGRET dedup stops it from resetting again on a later copy.
 #define REBOOT_BROADCAST_COPIES               8
 #define REBOOT_REBROADCAST_INTERVAL_SLOTFRAMES 1
 

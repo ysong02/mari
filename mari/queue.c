@@ -263,8 +263,7 @@ void mr_queue_set_join_request(uint64_t node_id) {
     }
 }
 
-// Pop the next join response off the FIFO into `packet`. Caller must have
-// checked that the FIFO is non-empty. Only ever called from the downlink slot.
+// Pop the next join response off the FIFO into `packet`, assuming the caller already checked it's non-empty; only ever called from the downlink slot.
 static uint8_t _pop_join_response(uint8_t *packet) {
     mr_packet_t *jp = &queue_vars.joinresp_queue.packets[queue_vars.joinresp_queue.current];
     memcpy(packet, jp->buffer, jp->length);

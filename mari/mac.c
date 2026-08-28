@@ -606,8 +606,7 @@ static void activity_ri4(uint32_t ts) {
     if (mari_get_node_type() == MARI_NODE && mr_mac_node_is_synced() &&
         header->src == mac_vars.synced_gateway && !is_stale_join_response) {
         // only fix drift if the packet comes from the gateway we are synced to
-        // NOTE: this should ideally be done at ri3 (when the packet starts), but we don't have the id there.
-        //       could use use the physical BLE address for that?
+        // NOTE: this should ideally happen at ri3 when the packet starts, but we don't have the id there yet.
         fix_drift(mac_vars.received_packet.start_ts);
     }
 
