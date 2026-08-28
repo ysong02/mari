@@ -58,9 +58,3 @@ The project includes configuration files for:
 ## License
 
 This project is licensed under the terms included in the LICENSE file.
-
-## Publications
-
-The network that we operate on:
-- Fedrecheski et al., "Mari: Connecting Large Scale Robot Swarms over BLE using TSCH with Multiple Independent Gateways", CrystalFreeIoT Workshop 2025 [Forthcoming]
-
