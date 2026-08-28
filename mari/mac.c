@@ -246,7 +246,7 @@ static void new_slot_synced(void) {
 
     // perform timeout checks
     if (mari_get_node_type() == MARI_GATEWAY) {
-        // too long without receiving a packet from certain nodes? disconnect them
+        // disconnect nodes we haven't heard from in too long
         DEBUG_GPIO_SET(&pin1);
         mr_assoc_gateway_clear_old_nodes(mac_vars.asn);
         DEBUG_GPIO_CLEAR(&pin1);
@@ -258,7 +258,7 @@ static void new_slot_synced(void) {
             return;
         }
         if (mr_assoc_node_too_long_synced_without_joining()) {
-            // too long synced without being able to join? give up and go back to scanning
+            // give up and go back to scanning if synced too long without joining
             mr_assoc_node_handle_give_up_joining();
             node_back_to_scanning();
             return;
@@ -266,7 +266,7 @@ static void new_slot_synced(void) {
         if (mr_assoc_node_too_long_waiting_for_join_response()) {
             DEBUG_GPIO_SET(&pin3);
             DEBUG_GPIO_CLEAR(&pin3);
-            // too long without receiving a join response? notify the association module which will backfoff
+            // notify the association module (which will back off) if we've waited too long for a join response
             bool keep_trying_to_join = mr_assoc_node_handle_failed_join();
             if (!keep_trying_to_join) {
                 node_back_to_scanning();
@@ -601,8 +601,6 @@ static void activity_ri4(uint32_t ts) {
     // if (mari_get_node_type() == MARI_NODE && mr_assoc_is_joined() && header->src == mac_vars.synced_gateway) {
     if (mari_get_node_type() == MARI_NODE && mr_mac_node_is_synced() && header->src == mac_vars.synced_gateway) {
         // only fix drift if the packet comes from the gateway we are synced to
-        // NOTE: this should ideally be done at ri3 (when the packet starts), but we don't have the id there.
-        //       could use use the physical BLE address for that?
         fix_drift(mac_vars.received_packet.start_ts);
     }
 

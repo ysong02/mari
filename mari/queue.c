@@ -32,8 +32,7 @@
 #define EDHOC_MSG3_ENTRIES       32
 #define PENDING_JOINRESP_SIZE    32
 
-// How many slots to wait for msg3 before sending join response without it (fallback).
-// The UART roundtrip (edge processes msg2, returns msg3) is ~10-30 ms; 30 slots ~300 ms is ample.
+// How many slots to wait for msg3 before sending join response without it; the UART roundtrip is ~10-30 ms, so 30 slots (~300 ms) is ample margin.
 #define JOINRESP_WAIT_TIMEOUT_SLOTS 30
 
 typedef struct {
@@ -300,8 +299,7 @@ static void _finalize_join_response(uint64_t node_id, uint8_t cell_id) {
 }
 
 void mr_queue_set_join_response(uint64_t node_id, uint8_t assigned_cell_id) {
-    // Hold the join response until msg3 arrives from the edge.
-    // Search for an existing slot for this node (re-join) or a free slot.
+    // Hold the join response until msg3 arrives from the edge, reusing an existing slot for this node (re-join) or taking a free one.
     for (uint8_t i = 0; i < PENDING_JOINRESP_SIZE; i++) {
         if (!pending_joinresp_pool[i].valid || pending_joinresp_pool[i].node_id == node_id) {
             pending_joinresp_pool[i].valid       = true;

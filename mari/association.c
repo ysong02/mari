@@ -30,7 +30,7 @@
 
 //=========================== debug ============================================
 
-#ifndef DEBUG  // FIXME: remove before merge. Just to make VS Code enable code behind `#ifdef DEBUG`
+#ifndef DEBUG  // FIXME: remove before merge, forces DEBUG on so VS Code highlights code behind `#ifdef DEBUG`
 #define DEBUG
 #endif
 
@@ -63,7 +63,7 @@ mr_gpio_t led3 = { .port = 0, .pin = 31 };
 #define MARI_BACKOFF_N_MIN 4
 #define MARI_BACKOFF_N_MAX 6
 
-#define MARI_JOIN_TIMEOUT_SINCE_SYNCED (1000 * 1000 * 5)  // 5 seconds. after this time, go back to scanning. NOTE: have it be based on slotframe size?
+#define MARI_JOIN_TIMEOUT_SINCE_SYNCED (1000 * 1000 * 5)  // 5 seconds; after this time, go back to scanning
 
 // temporary for attestation test
 // #define MARI_ATTEST_NOT_JOIN (1000 * 1000 * 10)
@@ -79,7 +79,7 @@ typedef struct {
     mr_assoc_state_t state;
     mr_event_cb_t    mari_event_callback;
     uint32_t         last_state_change_ts;  ///< Last time the state changed
-    uint16_t         network_id;            ///< If gateway, puts it in the beacon packet. If node, uses it to filter beacons (0 means accept any network)
+    uint16_t         network_id;            ///< Gateway puts this in the beacon packet; node uses it to filter beacons (0 means accept any network)
 
     // node
     uint32_t       last_received_from_gateway_asn;  ///< Last received packet when in joined state
@@ -491,7 +491,7 @@ void mr_assoc_handle_beacon(uint8_t *packet, uint8_t length, uint8_t channel, ui
         assoc_vars.synced_gateway_remaining_capacity = beacon->remaining_capacity;
     }
 
-    if (beacon->remaining_capacity == 0) {  // TODO: what if I am joined to this gateway? add a check for it.
+    if (beacon->remaining_capacity == 0) {  // TODO: check whether I'm already joined to this gateway before ignoring it
         // this gateway is full, ignore it
         return;
     }

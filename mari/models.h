@@ -174,7 +174,7 @@ typedef struct {
     uint8_t backoff_n_min;            // minimum exponent for the backoff algorithm
     uint8_t backoff_n_max;            // maximum exponent for the backoff algorithm
     size_t  n_cells;                  // number of cells in this schedule
-    cell_t  cells[MARI_N_CELLS_MAX];  // cells in this schedule. NOTE(FIXME?): the first 3 cells must be beacons
+    cell_t  cells[MARI_N_CELLS_MAX];  // cells in this schedule; the first 3 cells must be beacons
 } schedule_t;
 
 typedef struct {
