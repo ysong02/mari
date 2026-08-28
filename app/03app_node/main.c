@@ -75,9 +75,7 @@ typedef struct {
     uint64_t conn_asn_dl;      ///< ASN when join response arrived
 } node_vars_t;
 
-// Dedicated buffer for pending msg2 from join response.
-// MARI_EDHOC_MSG3 fires in interrupt context alongside MARI_CONNECTED — storing
-// separately prevents the single-slot event from being overwritten before main loop reads it.
+// Dedicated buffer for pending msg2 since MARI_EDHOC_MSG3 fires in interrupt context alongside MARI_CONNECTED and would otherwise overwrite the single-slot event before the main loop reads it.
 typedef struct {
     bool    ready;
     uint8_t data[MARI_EDHOC_MAX_MSG_LEN];
@@ -106,9 +104,7 @@ static uint8_t _status_pkt[4] = {
     80,    // battery level
 };
 
-// Node = EDHOC Initiator.
-// Reuse the same credential pair as the swarm mari_edge.py initiator so the
-// edge (now responder) can authenticate the node with its known CRED_I.
+// Node is the EDHOC Initiator here, reusing the swarm mari_edge.py initiator's credential pair so the edge can authenticate it with its known CRED_I.
 static const BytesP256ElemLen I = {
     0x1f, 0x7e, 0x4a, 0xe4, 0x29, 0x3a, 0x34, 0x8b, 0xf2, 0xb1, 0x36, 0x5c, 0xe0, 0x98, 0xaa, 0x49,
     0xc2, 0x07, 0xbd, 0x1b, 0xa7, 0xdd, 0xde, 0xcd, 0xfa, 0xd6, 0x0c, 0xad, 0xe8, 0x2e, 0x9e, 0xf5
@@ -206,9 +202,7 @@ static void _start_edhoc_session(void) {
 
 static void _mari_event_cb(mr_event_t event, mr_event_data_t event_data) {
     if (event == MARI_EDHOC_MSG3) {
-        // Join response contains msg2 from edge. Store separately:
-        // MARI_CONNECTED fires immediately after in the same call chain and would
-        // overwrite the single-slot event before the main loop can read it.
+        // Join response's msg2 is stored separately since MARI_CONNECTED fires right after in the same call chain and would overwrite the single-slot event before the main loop can read it.
         uint8_t len = event_data.data.edhoc.len;
         if (len > MARI_EDHOC_MAX_MSG_LEN) { len = MARI_EDHOC_MAX_MSG_LEN; }
         memcpy(_msg2_pend.data, event_data.data.edhoc.data, len);
@@ -382,13 +376,7 @@ int main(void) {
             }
 
             if (_node_vars.edhoc_msg3_ready && !_node_vars.msg3_acked) {
-                // Retransmit msg3 until the edge acks it (MAURA_MSG3_ACK_TAG, handled
-                // above in MARI_NEW_PACKET) or we hit MSG3_MAX_RETRIES. This is smarter
-                // than either extreme: a single unacknowledged shot can't tell success
-                // from failure (any one lost packet permanently fails the round), while
-                // blindly retrying a fixed number of times regardless of outcome just
-                // floods the air/UART even after the edge already has it. The ack lets
-                // us stop the instant delivery is confirmed.
+                // Retransmit msg3 until the edge acks it or we hit MSG3_MAX_RETRIES, since a single shot can't distinguish loss from success and blind fixed retries would keep flooding the air after delivery.
                 uint8_t buf[2 + MAURA_MSG_BUF_LEN];
                 uint8_t pos   = 0;
                 buf[pos++]    = MARI_EDHOC_PAYLOAD_TAG;

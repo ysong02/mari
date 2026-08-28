@@ -32,12 +32,12 @@
 #define BLE_2M_B_MS                 (BLE_2M / 8 / 1000)   // 250 bytes/ms
 #define BLE_2M_US_PER_BYTE          (1000 / BLE_2M_B_MS)  // 4 us
 
-// Intra-slot durations. TOA definitions consider BLE 2M mode.
+// Intra-slot durations, with TOA definitions assuming BLE 2M mode.
 #define MARI_TS_TX_OFFSET            (400)                                               // time for radio setup before TX
 #define MARI_RX_GUARD_TIME           (140)                                               // time range relative to MARI_TS_TX_OFFSET for the receiver to start RXing
 #define MARI_END_GUARD_TIME          (MARI_RX_GUARD_TIME + 100)                          // Added 40 us based on measurements witn nRF52 and nRF53
 #define MARI_PACKET_TOA              (BLE_2M_US_PER_BYTE * MARI_BLE_PAYLOAD_MAX_LENGTH)  // Time on air for the maximum payload.
-#define MARI_PACKET_TOA_WITH_PADDING (MARI_PACKET_TOA + 120)                             // Add padding based on experiments. Also, it takes 28 us until event ADDRESS is triggered (when the packet actually starts traveling over the air)
+#define MARI_PACKET_TOA_WITH_PADDING (MARI_PACKET_TOA + 120)                             // Padding added from experiments to cover the roughly 28 us until the ADDRESS event triggers when the packet actually starts transmitting
 
 // Duration of some packets
 #define MARI_BEACON_TOA              (BLE_2M_US_PER_BYTE * sizeof(mr_beacon_packet_header_t))  // Time on air for the beacon packet
@@ -68,7 +68,7 @@ typedef struct {
     uint32_t rx_max;     ///< Maximum time the receiver can be active.
 
     // common
-    uint32_t end_guard;   ///< Time to wait after the end of the slot, so that the radio can fully turn off. Can be overriden with a large value to facilitate debugging. Must be at minimum rx_guard.
+    uint32_t end_guard;   ///< Time to wait after the slot ends so the radio can fully turn off, at minimum rx_guard, though it can be set larger for debugging.
     uint32_t whole_slot;  ///< Total duration of the slot
 } mr_slot_durations_t;
 

@@ -297,8 +297,7 @@ static void _finalize_join_response(uint64_t node_id, uint8_t cell_id) {
 }
 
 void mr_queue_set_join_response(uint64_t node_id, uint8_t assigned_cell_id) {
-    // Hold the join response until msg3 arrives from the edge.
-    // Search for an existing slot for this node (re-join) or a free slot.
+    // Hold the join response until msg3 arrives, searching for an existing slot for this node or a free one.
     for (uint8_t i = 0; i < PENDING_JOINRESP_SIZE; i++) {
         if (!pending_joinresp_pool[i].valid || pending_joinresp_pool[i].node_id == node_id) {
             pending_joinresp_pool[i].valid       = true;

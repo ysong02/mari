@@ -30,7 +30,7 @@
 
 //=========================== debug ============================================
 
-#ifndef DEBUG  // FIXME: remove before merge. Just to make VS Code enable code behind `#ifdef DEBUG`
+#ifndef DEBUG  // FIXME: remove before merge -- only here so VS Code enables the code behind `#ifdef DEBUG`
 #define DEBUG
 #endif
 
@@ -63,7 +63,7 @@ mr_gpio_t led3 = { .port = 0, .pin = 31 };
 #define MARI_BACKOFF_N_MIN 4
 #define MARI_BACKOFF_N_MAX 6
 
-#define MARI_JOIN_TIMEOUT_SINCE_SYNCED (1000 * 1000 * 5)  // 5 seconds. after this time, go back to scanning. NOTE: have it be based on slotframe size?
+#define MARI_JOIN_TIMEOUT_SINCE_SYNCED (1000 * 1000 * 5)  // 5 seconds, after which the node gives up and goes back to scanning
 
 // temporary for attestation test
 // #define MARI_ATTEST_NOT_JOIN (1000 * 1000 * 10)
@@ -79,7 +79,7 @@ typedef struct {
     mr_assoc_state_t state;
     mr_event_cb_t    mari_event_callback;
     uint32_t         last_state_change_ts;  ///< Last time the state changed
-    uint16_t         network_id;            ///< If gateway, puts it in the beacon packet. If node, uses it to filter beacons (0 means accept any network)
+    uint16_t         network_id;            ///< Network id put in the beacon packet by the gateway, or used by the node to filter beacons where 0 means accept any network.
 
     // node
     uint32_t       last_received_from_gateway_asn;  ///< Last received packet when in joined state
